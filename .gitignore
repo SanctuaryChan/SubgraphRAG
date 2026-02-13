@@ -2,3 +2,5 @@
 wandb
 *.pth
 retrieve/data_files
+.idea
+.DS_Store
