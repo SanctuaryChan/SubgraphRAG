@@ -115,6 +115,8 @@ python inference.py -p cwq_xxx/cpt.pth --max_K 500
 
 ### 4.4 检索评测（召回）
 
+真正的推理结果在4.3已经生成好了（result.pth文件），这个环节不再做推理，仅仅是读取pth文件计算和汇总各种指标并且打印
+
 ```bash
 cd retrieve
 conda activate retriever
@@ -171,6 +173,18 @@ huggingface-cli download siqim311/SubgraphRAG --revision main --local-dir ./
 ```bash
 python main.py -d webqsp --prompt_mode scored_100
 python main.py -d cwq --prompt_mode scored_100
+```
+
+如果从Hf上提前下载好模型到本地，则需补充 -m 参数
+
+```bash
+export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1   # 建议加，4090多卡更稳
+CUDA_VISIBLE_DEVICES=0,1 python main.py -d webqsp --prompt_mode scored_100 \
+ -p ../retrieve/webqsp_Feb13-13:49:52/retrieval_result.pth \
+ -m /data/models/Llama-3.1-8B-Instruct \
+ --tensor_parallel_size 2 \
+ --max_seq_len_to_capture 65536 \
+ --max_tokens 1024
 ```
 
 ### 5.2 使用你自己训练出来的检索结果
