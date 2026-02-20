@@ -1,3 +1,9 @@
+'''
+数据集处理脏活累活
+called from: retrieve/emb.py
+'''
+
+
 import os
 import pickle
 
@@ -7,6 +13,7 @@ class EmbInferDataset:
     def __init__(
         self,
         raw_set,
+        # 这个entity_identifiers其实是个实体黑名单，用于过滤无具体语义的实体（例如机器ID），因为它们的文本embedding没有意义，反而会干扰模型训练。
         entity_identifiers,
         save_path,
         skip_no_topic=True,
@@ -92,6 +99,9 @@ class EmbInferDataset:
         #             (2) number of entities without text
         text_entity_list = []
         non_text_entity_list = []
+
+        # 过滤无意义的实体，并且保证有意义的实体在ID空间的前面，方便后续模型训练时区分两类实体。
+        # non_text_entity_list后续将不再计算Embedding，同时节省计算资源
         for entity in entity_list:
             if entity in entity_identifiers:
                 non_text_entity_list.append(entity)
@@ -109,6 +119,7 @@ class EmbInferDataset:
             entity_id += 1
 
         # Model input (3) text of relations
+        # 由于set的无序性，必须要sorted一下，保证关系ID的确定性，否则模型训练和推理时关系ID不一致会出大问题。
         relation_list = sorted(all_relations)
         # Create relation IDs.
         rel2id = dict()

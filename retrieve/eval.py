@@ -1,3 +1,8 @@
+'''
+评估子图检索效果的核心脚本
+对三个不同下游任务的reall@k进行评估，打印表格
+'''
+
 import numpy as np
 import pandas as pd
 import torch
@@ -46,7 +51,8 @@ def main(args):
 
     for metric, val in metric_dict.items():
         metric_dict[metric] = np.mean(val)
-    
+
+    # 构建打印格式，打印三个下游任务的recall@k表格
     table_dict = {
         'K': k_list,
         'ans_recall': [

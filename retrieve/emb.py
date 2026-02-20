@@ -1,3 +1,10 @@
+'''
+拿到数据集后的第一步处理：文本编码器的前向传播，得到问题、实体、关系的embedding
+call：dataset/emb.py 干脏活累活
+输出：.pkl和.pth文件
+'''
+
+
 import os
 import torch
 
@@ -5,6 +12,8 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 from src.config.emb import load_yaml
+
+# 关于内部字段（h_id_list ...）处理的活，都让它来干了
 from src.dataset.emb import EmbInferDataset
 
 def get_emb(subset, text_encoder, save_file):
@@ -30,6 +39,7 @@ def main(args):
     
     torch.set_num_threads(config['env']['num_threads'])
 
+    # 读取hf数据集
     if args.dataset == 'cwq':
         input_file = os.path.join('rmanluo', 'RoG-cwq')
     else:

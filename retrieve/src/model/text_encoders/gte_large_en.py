@@ -1,3 +1,9 @@
+'''
+语义编码模块
+利用gte-large-en-v1.5模型对文本进行编码，得到文本的语义表示向量。
+'''
+
+
 import torch
 import torch.nn.functional as F
 

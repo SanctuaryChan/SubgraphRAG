@@ -1,3 +1,8 @@
+'''
+Retriever 主训练逻辑
+'''
+
+
 import numpy as np
 import os
 import pandas as pd
@@ -64,6 +69,9 @@ def eval_epoch(config, device, data_loader, model):
     
     return metric_dict
 
+'''
+训练函数
+'''
 def train_epoch(device, train_loader, model, optimizer):
     model.train()
     epoch_loss = 0
@@ -95,6 +103,7 @@ def train_epoch(device, train_loader, model, optimizer):
 
 def main(args):
     # Modify the config file for advanced settings and extensions.
+    # 加载训练参数等配置文件
     config_file = f'configs/retriever/{args.dataset}.yaml'
     config = load_yaml(config_file)
     
@@ -102,6 +111,7 @@ def main(args):
     torch.set_num_threads(config['env']['num_threads'])
     set_seed(config['env']['seed'])
 
+    # 初始化保存路径（含时间戳）以及wandb监控任务
     ts = time.strftime('%b%d-%H:%M:%S', time.gmtime())
     config_df = pd.json_normalize(config, sep='/')
     exp_prefix = config['train']['save_prefix']
@@ -113,6 +123,7 @@ def main(args):
     )
     os.makedirs(exp_name, exist_ok=True)
 
+    # 调用RetrieverDataset加载.pkl读取数据集
     train_set = RetrieverDataset(config=config, split='train')
     val_set = RetrieverDataset(config=config, split='val')
 
@@ -122,11 +133,15 @@ def main(args):
         val_set, batch_size=1, collate_fn=collate_retriever)
     
     emb_size = train_set[0]['q_emb'].shape[-1]
+
+    # 加载Retriever模型
     model = Retriever(emb_size, **config['retriever']).to(device)
     optimizer = Adam(model.parameters(), **config['optimizer'])
 
     num_patient_epochs = 0
     best_val_metric = 0
+
+    # 训练逻辑
     for epoch in range(config['train']['num_epochs']):
         num_patient_epochs += 1
         

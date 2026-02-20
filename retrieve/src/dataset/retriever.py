@@ -1,3 +1,10 @@
+'''
+数据集检索工具类: 加载.plk 寻找最短路径，并将路径上的边（triple_id）标记为1，作为监督信号训练检索模型
+called from: retrieve/train.py
+called from: retrieve/inference.py
+'''
+
+
 import networkx as nx
 import numpy as np
 import os
@@ -31,6 +38,19 @@ class RetrieverDataset:
         self._assembly(
             processed_dict_list, triple_score_dict, emb_dict, skip_no_path)
 
+    '''
+    加载.pkl中的数据
+    @return：
+    - id
+    - q_text
+    - h_id_list
+    - r_id_list
+    - t_id_list
+    - text_entities_list
+    - non_text_entities_list
+    - q_entity_id_list
+    - a_entity_id_list
+    '''
     def _load_processed(
         self,
         dataset_name,
@@ -41,6 +61,16 @@ class RetrieverDataset:
         with open(processed_file, 'rb') as f:
             return pickle.load(f)
 
+    '''
+    管理那些耗时的路径提取工作，并确保这些昂贵的计算结果（即作为监督信号的标签）能够被妥善保存和重复利用
+    @return：
+    - triple_score_dict: {
+        sample_id: {
+            'triple_scores': tensor, 
+            'max_path_length': int
+        }
+    }
+    '''
     def _get_triple_scores(
         self,
         dataset_name,
@@ -51,6 +81,7 @@ class RetrieverDataset:
         os.makedirs(save_dir, exist_ok=True)
         save_file = os.path.join(save_dir, f'{split}.pth')
 
+        # 缓存机制：首先检查磁盘上是否已经存在处理好的 .pth 文件。如果存在，直接加载返回，避免重复进行耗时的最短路径搜索。
         if os.path.exists(save_file):
             return torch.load(save_file)
 
@@ -70,10 +101,21 @@ class RetrieverDataset:
         
         return triple_score_dict
 
+    '''
+    在给定的候选三元组池中，找出连接“问题实体”和“答案实体”的最短路径，并将路径上的边标记为训练目标（Label=1）
+    @call:
+    - self._get_nx_g: 找图
+    - self._shortest_path: 计算最短路径
+    - self._score_triples: 将路径转为01向量
+    @return：
+    - triple_scores: tensor, shape = (num_triples, ), 指示每个三元组是否位于 q_entity 和 a_entity 实体之间的任何最短路径上
+    - max_path_length: int, 该最短路径的跳数
+    '''
     def _extract_paths_and_score(
         self,
         sample
     ):
+        # 生成有向图
         nx_g = self._get_nx_g(
             sample['h_id_list'],
             sample['r_id_list'],
@@ -81,22 +123,29 @@ class RetrieverDataset:
         )
 
         # Each raw path is a list of entity IDs.
+        # TODO: 调用 self._shortest_path() 找到所有的最短路径
         path_list_ = []
         for q_entity_id in sample['q_entity_id_list']:
             for a_entity_id in sample['a_entity_id_list']:
+
+                # paths_q_a = [[实体ID_1, 实体ID_2, ...], [实体ID_x, 实体ID_y, ...]]
                 paths_q_a = self._shortest_path(nx_g, q_entity_id, a_entity_id)
                 if len(paths_q_a) > 0:
                     path_list_.extend(paths_q_a)
 
         if len(path_list_) == 0:
+            # 标记这题没法教，因为图里没答案
             max_path_length = None
         else:
+            # 初始化为0
             max_path_length = 0
 
         # Each processed path is a list of triple IDs.
-        path_list = []
 
+        path_list = []
         for path in path_list_:
+            # TODO: 计算这些最短路径的最大跳数
+            # 这里可能会疑惑，都最短路径了，那长度应该是一样才对，但是一个“问题实例”，它可能包含多个q_entity和多个a_entity
             num_triples_path = len(path) - 1
             max_path_length = max(max_path_length, num_triples_path)
             triples_path = []
@@ -119,6 +168,11 @@ class RetrieverDataset:
         
         return triple_scores, max_path_length
 
+    '''
+    使用 networkx 库根据 .pkl 文件中的 h_id_list 和 t_id_list 构建一个有向图 DiGraph
+    @retuen:
+    - nx_g: networkx.DiGraph, 其中节点代表实体ID，边代表三元组（h_id, r_id, t_id），边属性包含 triple_id 和 relation_id
+    '''
     def _get_nx_g(
         self,
         h_id_list,
@@ -131,10 +185,16 @@ class RetrieverDataset:
             h_i = h_id_list[i]
             r_i = r_id_list[i]
             t_i = t_id_list[i]
+            # 将原始索引i塞入triple_id, 方便后续溯源
             nx_g.add_edge(h_i, t_i, triple_id=i, relation_id=r_i)
 
         return nx_g
 
+    '''
+    寻找双向最短路径
+    @return：
+    [[实体ID_1, 实体ID_2, ...], [实体ID_x, 实体ID_y, ...]]
+    '''
     def _shortest_path(
         self,
         nx_g,
@@ -163,6 +223,11 @@ class RetrieverDataset:
         
         return refined_paths
 
+    '''
+    逐条读取候选路径，将路径上的三元组索引转为0/1向量，1表示该三元组位于 q_entity 和 a_entity 实体之间的任何最短路径上，0表示不在任何最短路径上
+    @return:
+    - triple_scores: tensor, shape = (num_triples, ), 指示每个三元组是否位于 q_entity 和 a_entity 实体之间的任何最短路径上
+    '''
     def _score_triples(
         self,
         path_list,
@@ -176,6 +241,17 @@ class RetrieverDataset:
 
         return triple_scores
 
+    '''
+    加载.pth文件
+    @return：
+    - emb_dict: {
+        sample_id: {
+            'q_emb': tensor, 
+            'entity_embs': tensor, 
+            'relation_embs': tensor
+        }
+    }
+    '''
     def _load_emb(
         self,
         dataset_name,
@@ -187,6 +263,10 @@ class RetrieverDataset:
         
         return dict_file
 
+    '''
+    将处理好的数据、路径得分和预计算的嵌入向量整合到一个统一的数据结构中，供后续的训练和推理使用
+    @return: None
+    '''
     def _assembly(
         self,
         processed_dict_list,
@@ -209,6 +289,7 @@ class RetrieverDataset:
             num_relevant_triples_i = len(triple_score_i.nonzero())
             num_relevant_triples.append(num_relevant_triples_i)
 
+            # target_triple_probs 可以理解为是监督信号
             sample_i['target_triple_probs'] = triple_score_i
             sample_i['max_path_length'] = max_path_length_i
 
