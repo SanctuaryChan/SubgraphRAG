@@ -108,7 +108,8 @@ class Retriever(nn.Module):
         entity_embs,
         num_non_text_entities,
         relation_embs,
-        topic_entity_one_hot
+        topic_entity_one_hot,
+        return_aux=False
     ):
         device = entity_embs.device
 
@@ -165,4 +166,8 @@ class Retriever(nn.Module):
             h_e[t_id_tensor]
         ], dim=1)
         
-        return self.pred(h_triple)
+        triple_logits = self.pred(h_triple)
+        if return_aux:
+            return triple_logits, h_e, edge_index, reverse_edge_index
+
+        return triple_logits

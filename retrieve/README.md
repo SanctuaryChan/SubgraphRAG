@@ -11,6 +11,9 @@
     * [Training](#training)
     * [Inference](#inference)
     * [Evaluation](#evaluation)
+- [1-3 Stage2 Node Re-Ranking](#1-3-stage2-node-re-ranking)
+    * [Training](#training-1)
+    * [Inference](#inference-1)
 
 ## Supported Datasets
 
@@ -80,3 +83,39 @@ where `P` is the path to a saved model checkpoint. The predicted retrieval resul
 python eval.py -d D -p P
 ```
 where `D` should be a dataset mentioned in ["Supported Datasets"](#supported-datasets) and `P` is the path to [inference result](#inference), e.g., `webqsp_Nov08-01:14:47/retrieval_result.pth`.
+
+## 1-3 Stage2 Node Re-Ranking
+
+This is the MVP implementation of the second-stage reranker:
+
+- Build a Top-`K_t` subgraph from Stage1 triple scores.
+- Reuse node features `semantic + topic_pe + DDE`.
+- Train a GNN node classifier (`node BCE`) for answer entity reranking.
+- Re-rank Stage1 triples with Stage2 node scores.
+
+### Training
+
+```bash
+python train_stage2.py -p P -d D --top_k_t 500 --hidden_dim 256 --num_layers 2 --node_top_m 50
+```
+
+where:
+
+- `P` is the Stage1 checkpoint path (e.g., `webqsp_Nov08-01:14:47/cpt.pth`)
+- `D` is one of the supported datasets (`webqsp` or `cwq`)
+
+By default, the Stage2 checkpoint is saved beside `P` as `stage2_cpt.pth`.
+
+### Inference
+
+```bash
+python inference_stage2.py -p P --stage2_path S --max_K 500 --node_top_m 50 --alpha 0.5
+```
+
+where:
+
+- `P` is the Stage1 checkpoint path
+- `S` is the Stage2 checkpoint path (e.g., `webqsp_Nov08-01:14:47/stage2_cpt.pth`)
+
+By default, results are saved beside `P` as `retrieval_result_stage2.pth`.
+The output keeps the original `scored_triples` field for compatibility with `reason/main.py`, and also adds Stage2-specific fields (`stage1_scored_triples`, `stage2_node_scores`, `stage2_top_nodes`, `stage2_meta`).
