@@ -109,13 +109,25 @@ By default, the Stage2 checkpoint is saved beside `P` as `stage2_cpt.pth`.
 ### Inference
 
 ```bash
-python inference_stage2.py -p P --stage2_path S --max_K 500 --node_top_m 50 --alpha 0.5
+python inference_stage2.py -p P --stage2_path S --max_K 500 --node_top_m 50 --alpha 0.9
 ```
 
 where:
 
 - `P` is the Stage1 checkpoint path
 - `S` is the Stage2 checkpoint path (e.g., `webqsp_Nov08-01:14:47/stage2_cpt.pth`)
+- local rerank is enabled by default to protect the front of Stage1 ranking:
+  - keep Stage1 top-50 unchanged
+  - keep Stage1 ranks 51-70 unchanged
+  - replace Stage1 ranks 71-100 with top-30 candidates from Stage1 ranks 101-500, ranked by Stage2-enhanced score
+
+Useful local-rerank args:
+
+- `--local_rerank/--no-local_rerank` (default: enabled)
+- `--lock_top_n 50`
+- `--preserve_mid_start 51 --preserve_mid_end 70`
+- `--replace_start 71 --replace_end 100`
+- `--candidate_pool_start 101 --candidate_x 30`
 
 By default, results are saved beside `P` as `retrieval_result_stage2.pth`.
 The output keeps the original `scored_triples` field for compatibility with `reason/main.py`, and also adds Stage2-specific fields (`stage1_scored_triples`, `stage2_node_scores`, `stage2_top_nodes`, `stage2_meta`).

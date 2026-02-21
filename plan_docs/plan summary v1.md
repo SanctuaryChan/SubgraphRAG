@@ -118,8 +118,7 @@ MVP 的默认超参你希望采用哪套？
     answer: 稳妥默认(Recommended)
 
 Stage2 训练方式你更倾向哪种？
-
-  › 1. 两阶段训练(Recommended)  先用现有 Retriever checkpoint；再单独训练 Stage2 NodeReranker，风险最低
+  answer: 稳妥默认(Recommended) 1. 两阶段训练  先用现有 Retriever checkpoint；再单独训练 Stage2 NodeReranker，风险最低
     2. 联合训练                 triple BCE + node BCE 同时优化，潜在更优但实现复杂
     3. 仅推理加Stage2           不训练 Stage2，仅启发式打分，创新有效性较弱
     4. None of the above        Optionally, add details in notes (tab).

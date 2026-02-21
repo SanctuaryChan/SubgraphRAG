@@ -1,7 +1,7 @@
 import os
 import torch
 
-from argparse import ArgumentParser
+from argparse import ArgumentParser, BooleanOptionalAction
 from tqdm import tqdm
 
 from src.dataset.retriever import RetrieverDataset, collate_retriever
@@ -43,9 +43,75 @@ def resolve_dataset_name(config, dataset_arg):
     return dataset_arg
 
 
+def validate_local_rerank_args(args):
+    if not args.local_rerank:
+        return
+
+    if args.candidate_x <= 0:
+        raise ValueError('--candidate_x must be > 0 when local rerank is enabled.')
+
+    if not (
+        1 <= args.lock_top_n < args.preserve_mid_start <= args.preserve_mid_end <
+        args.replace_start <= args.replace_end < args.candidate_pool_start <= args.max_K
+    ):
+        raise ValueError(
+            'Invalid local rerank ranges. Expected: '
+            '1 <= lock_top_n < preserve_mid_start <= preserve_mid_end < '
+            'replace_start <= replace_end < candidate_pool_start <= max_K.'
+        )
+
+    replace_span = args.replace_end - args.replace_start + 1
+    if args.candidate_x != replace_span:
+        raise ValueError(
+            f'--candidate_x ({args.candidate_x}) must equal replace span '
+            f'({replace_span}) for one-to-one replacement.'
+        )
+
+
+def build_local_rerank_ids(stage1_ranked_ids, triple_scores_final, args):
+    k_t = len(stage1_ranked_ids)
+    replace_start_idx = args.replace_start - 1
+    replace_end_idx = min(args.replace_end, k_t)
+    pool_start_idx = args.candidate_pool_start - 1
+
+    if k_t <= replace_start_idx or k_t <= pool_start_idx:
+        return stage1_ranked_ids, 0, False
+
+    front_seg = stage1_ranked_ids[:replace_start_idx]
+    replace_seg = stage1_ranked_ids[replace_start_idx:replace_end_idx]
+    between_seg = stage1_ranked_ids[replace_end_idx:pool_start_idx]
+    pool_seg = stage1_ranked_ids[pool_start_idx:]
+
+    if len(replace_seg) == 0 or len(pool_seg) == 0:
+        return stage1_ranked_ids, 0, False
+
+    num_selected = min(args.candidate_x, len(replace_seg), len(pool_seg))
+    pool_id_tensor = torch.as_tensor(pool_seg, dtype=torch.long, device=triple_scores_final.device)
+    pool_scores = triple_scores_final[pool_id_tensor]
+    pool_top = torch.topk(pool_scores, num_selected)
+
+    selected_ids = [pool_seg[i] for i in pool_top.indices.cpu().tolist()]
+    selected_set = set(selected_ids)
+    pool_remaining = [tid for tid in pool_seg if tid not in selected_set]
+
+    # Fill replacement slots; if candidate pool is too short, keep part of Stage1 replace segment.
+    replace_remaining = replace_seg[:len(replace_seg) - num_selected]
+    final_ids = front_seg + selected_ids + replace_remaining + between_seg + pool_remaining
+
+    if len(final_ids) != k_t:
+        raise RuntimeError(
+            f'Local rerank produced invalid length: {len(final_ids)} vs {k_t}.'
+        )
+    if len(set(final_ids)) != k_t:
+        raise RuntimeError('Local rerank produced duplicated triple ids.')
+
+    return final_ids, num_selected, True
+
+
 @torch.no_grad()
 def main(args):
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    validate_local_rerank_args(args)
 
     stage1_cpt = torch.load(args.path, map_location='cpu')
     config = stage1_cpt['config']
@@ -76,6 +142,9 @@ def main(args):
     stage2_model.eval()
 
     pred_dict = dict()
+    local_rerank_applied = 0
+    local_rerank_fallback = 0
+    local_rerank_partial = 0
     for i in tqdm(range(len(infer_set))):
         raw_sample = infer_set[i]
         sample = collate_retriever([raw_sample])
@@ -90,6 +159,8 @@ def main(args):
         target_relevant_triples = []
         stage2_node_scores = []
         stage2_top_nodes = []
+        local_applied_for_sample = False
+        local_selected_for_sample = 0
 
         if len(h_id_tensor) != 0:
             triple_logits, h_e, _, _ = stage1_model(
@@ -136,9 +207,23 @@ def main(args):
             edge_node_scores = (node_scores_full[h_id_tensor] + node_scores_full[t_id_tensor]) / 2.0
             triple_scores_final = args.alpha * triple_scores_stage1 + (1.0 - args.alpha) * edge_node_scores
 
-            top_final = torch.topk(triple_scores_final, k_t)
-            top_final_ids = top_final.indices.cpu().tolist()
-            top_final_scores = top_final.values.cpu().tolist()
+            if args.local_rerank:
+                top_final_ids, local_selected_for_sample, local_applied_for_sample = build_local_rerank_ids(
+                    top_stage1_ids.cpu().tolist(), triple_scores_final, args
+                )
+                if local_applied_for_sample:
+                    local_rerank_applied += 1
+                    expected_selected = args.replace_end - args.replace_start + 1
+                    if local_selected_for_sample < expected_selected:
+                        local_rerank_partial += 1
+                else:
+                    local_rerank_fallback += 1
+            else:
+                top_final = torch.topk(triple_scores_final, k_t)
+                top_final_ids = top_final.indices.cpu().tolist()
+
+            top_final_id_tensor = torch.as_tensor(top_final_ids, dtype=torch.long, device=device)
+            top_final_scores = triple_scores_final[top_final_id_tensor].cpu().tolist()
 
             for j, triple_id in enumerate(top_final_ids):
                 scored_triples.append((
@@ -174,6 +259,16 @@ def main(args):
                 'alpha': args.alpha,
                 'max_K': args.max_K,
                 'node_top_m': args.node_top_m,
+                'local_rerank': args.local_rerank,
+                'lock_top_n': args.lock_top_n,
+                'preserve_mid_start': args.preserve_mid_start,
+                'preserve_mid_end': args.preserve_mid_end,
+                'replace_start': args.replace_start,
+                'replace_end': args.replace_end,
+                'candidate_pool_start': args.candidate_pool_start,
+                'candidate_x': args.candidate_x,
+                'local_rerank_applied': local_applied_for_sample,
+                'local_selected': local_selected_for_sample,
             },
             'q_entity': raw_sample['q_entity'],
             'q_entity_in_graph': [entity_list[e_id] for e_id in raw_sample['q_entity_id_list']],
@@ -193,6 +288,11 @@ def main(args):
 
     torch.save(pred_dict, output_path)
     print(f'Saved Stage2 retrieval results to: {output_path}')
+    if args.local_rerank:
+        print(
+            f'Local rerank stats: applied={local_rerank_applied}, '
+            f'fallback={local_rerank_fallback}, partial={local_rerank_partial}'
+        )
 
 
 if __name__ == '__main__':
@@ -205,6 +305,24 @@ if __name__ == '__main__':
 
     parser.add_argument('--max_K', type=int, default=500)
     parser.add_argument('--node_top_m', type=int, default=50)
-    parser.add_argument('--alpha', type=float, default=0.5, help='Blend weight for Stage1 triple score')
+    parser.add_argument('--alpha', type=float, default=0.9, help='Blend weight for Stage1 triple score')
+    parser.add_argument(
+        '--local_rerank',
+        action=BooleanOptionalAction,
+        default=True,
+        help='Enable local replacement strategy for Stage2 rerank.',
+    )
+    parser.add_argument('--lock_top_n', type=int, default=50, help='Always keep Stage1 top-N unchanged.')
+    parser.add_argument('--preserve_mid_start', type=int, default=51)
+    parser.add_argument('--preserve_mid_end', type=int, default=70)
+    parser.add_argument('--replace_start', type=int, default=71)
+    parser.add_argument('--replace_end', type=int, default=100)
+    parser.add_argument('--candidate_pool_start', type=int, default=101)
+    parser.add_argument(
+        '--candidate_x',
+        type=int,
+        default=30,
+        help='Number of candidates promoted from candidate pool into replacement slots.',
+    )
 
     main(parser.parse_args())

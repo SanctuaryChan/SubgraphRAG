@@ -88,7 +88,7 @@ def eval_all(pred_file_path, run, subset, split=None, eval_hops=-1):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RAG for KGQA")
+    parser = argparse.ArgumentParser(description="RAG for KGQA.md")
     parser.add_argument("-d", "--dataset_name", type=str, default="cwq", help="Dataset name")
     parser.add_argument("--prompt_mode", type=str, default="scored_100", help="Prompt mode")
     parser.add_argument("-p", "--score_dict_path", type=str)
@@ -118,7 +118,7 @@ def main():
     frequency_penalty = args.frequency_penalty
     thres = args.thres
 
-    pred_file_path = f"./results/KGQA/{dataset_name}/RoG/{split}/results_gen_rule_path_RoG-{dataset_name}_RoG_{split}_predictions_3_False_jsonl/predictions.jsonl"
+    pred_file_path = f"./results/KGQA.md/{dataset_name}/RoG/{split}/results_gen_rule_path_RoG-{dataset_name}_RoG_{split}_predictions_3_False_jsonl/predictions.jsonl"
     run_name = f"{model_name}-{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}"
     run = wandb.init(project=f"RAG-{dataset_name}", name=run_name, config=args)
 
@@ -132,7 +132,7 @@ def main():
     else:
         score_dict_path = args.score_dict_path
 
-    raw_pred_folder_path = Path(f"./results/KGQA/{dataset_name}/SubgraphRAG/{args.model_name.split('/')[-1]}")
+    raw_pred_folder_path = Path(f"./results/KGQA.md/{dataset_name}/SubgraphRAG/{args.model_name.split('/')[-1]}")
     raw_pred_folder_path.mkdir(parents=True, exist_ok=True)
     raw_pred_file_path = raw_pred_folder_path / f"{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}-predictions-resume.jsonl"
 
