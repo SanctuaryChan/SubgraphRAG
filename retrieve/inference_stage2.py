@@ -95,8 +95,18 @@ def build_local_rerank_ids(stage1_ranked_ids, triple_scores_final, args):
     pool_remaining = [tid for tid in pool_seg if tid not in selected_set]
 
     # Fill replacement slots; if candidate pool is too short, keep part of Stage1 replace segment.
-    replace_remaining = replace_seg[:len(replace_seg) - num_selected]
-    final_ids = front_seg + selected_ids + replace_remaining + between_seg + pool_remaining
+    kept_len = len(replace_seg) - num_selected
+    replace_kept = replace_seg[:kept_len]
+    # Demoted ids are appended after the protected middle range so total length stays unchanged.
+    replace_demoted = replace_seg[kept_len:]
+    final_ids = (
+        front_seg
+        + selected_ids
+        + replace_kept
+        + between_seg
+        + replace_demoted
+        + pool_remaining
+    )
 
     if len(final_ids) != k_t:
         raise RuntimeError(
