@@ -108,26 +108,43 @@ By default, the Stage2 checkpoint is saved beside `P` as `stage2_cpt.pth`.
 
 ### Inference
 
+Minimal safe command (uses structure-aware local rerank defaults):
+
 ```bash
-python inference_stage2.py -p P --stage2_path S --max_K 500 --node_top_m 50 --alpha 0.9
+python inference_stage2.py -p P -d D
+```
+
+```bash
+python inference_stage2.py -p P --stage2_path S --max_K 500 --node_top_m 50 --alpha 0.9 \
+  --inject_strategy structure --topic_hop 2 --bridge_top_m 50 \
+  --lambda1 1.0 --lambda2 0.2 --lambda3 0.25 --lambda4 0.35
 ```
 
 where:
 
 - `P` is the Stage1 checkpoint path
-- `S` is the Stage2 checkpoint path (e.g., `webqsp_Nov08-01:14:47/stage2_cpt.pth`)
+- `S` is the Stage2 checkpoint path (e.g., `webqsp_Nov08-01:14:47/stage2_cpt.pth`, optional if `stage2_cpt.pth` is beside `P`)
 - local rerank is enabled by default to protect the front of Stage1 ranking:
   - keep Stage1 top-50 unchanged
-  - keep Stage1 ranks 51-70 unchanged
-  - replace Stage1 ranks 71-100 with top-30 candidates from Stage1 ranks 101-500, ranked by Stage2-enhanced score
+  - keep Stage1 ranks 51-90 unchanged
+  - replace Stage1 ranks 91-100 with top-10 candidates from Stage1 ranks 101-500
+- by default, promoted candidates are ranked with structure-aware inject score:
+  - `score_inject(e) = lambda1 * s1(e) + lambda2 * max(s2(u), s2(v)) + lambda3 * near_topic(e) + lambda4 * bridge_bonus(e)`
+  - `near_topic(e) = 1` if either endpoint is within `topic_hop` hops from topic nodes
+  - `bridge_bonus(e) = 1` if one endpoint is near-topic and the other is in top-`bridge_top_m` Stage2 nodes
 
 Useful local-rerank args:
 
 - `--local_rerank/--no-local_rerank` (default: enabled)
 - `--lock_top_n 50`
-- `--preserve_mid_start 51 --preserve_mid_end 70`
-- `--replace_start 71 --replace_end 100`
-- `--candidate_pool_start 101 --candidate_x 30`
+- `--preserve_mid_start 51 --preserve_mid_end 90`
+- `--replace_start 91 --replace_end 100`
+- `--candidate_pool_start 101 --candidate_x 10`
+- `--inject_strategy structure|fused` (`structure` by default)
+- `--topic_hop 2 --bridge_top_m 50`
+- `--lambda1 1.0 --lambda2 0.2 --lambda3 0.25 --lambda4 0.35`
 
-By default, results are saved beside `P` as `retrieval_result_stage2.pth`.
+By default, results are saved beside `P` as:
+- `retrieval_result_stage2_structure.pth` when structure local-rerank is enabled
+- otherwise `retrieval_result_stage2.pth`
 The output keeps the original `scored_triples` field for compatibility with `reason/main.py`, and also adds Stage2-specific fields (`stage1_scored_triples`, `stage2_node_scores`, `stage2_top_nodes`, `stage2_meta`).

@@ -67,8 +67,90 @@ def validate_local_rerank_args(args):
             f'({replace_span}) for one-to-one replacement.'
         )
 
+    if args.topic_hop < 0:
+        raise ValueError('--topic_hop must be >= 0.')
+    if args.bridge_top_m <= 0:
+        raise ValueError('--bridge_top_m must be > 0.')
 
-def build_local_rerank_ids(stage1_ranked_ids, triple_scores_final, args):
+
+def get_nodes_within_hops(h_id_tensor, t_id_tensor, seed_node_ids, num_nodes, hop):
+    device = h_id_tensor.device
+    if seed_node_ids is None or seed_node_ids.numel() == 0 or num_nodes == 0:
+        return torch.empty(0, dtype=torch.long, device=device)
+
+    visited = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+    frontier = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+    frontier[seed_node_ids] = True
+    visited |= frontier
+
+    for _ in range(hop):
+        if not torch.any(frontier):
+            break
+        incident_mask = frontier[h_id_tensor] | frontier[t_id_tensor]
+        if not torch.any(incident_mask):
+            break
+        neighbor_ids = torch.cat([h_id_tensor[incident_mask], t_id_tensor[incident_mask]], dim=0)
+        next_frontier = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+        next_frontier[neighbor_ids] = True
+        next_frontier &= ~visited
+        visited |= next_frontier
+        frontier = next_frontier
+
+    return torch.nonzero(visited, as_tuple=False).reshape(-1)
+
+
+def build_inject_scores(
+    h_id_tensor,
+    t_id_tensor,
+    triple_scores_stage1,
+    node_scores_full,
+    topic_ids,
+    args,
+):
+    edge_node_mean = (node_scores_full[h_id_tensor] + node_scores_full[t_id_tensor]) / 2.0
+    triple_scores_final = args.alpha * triple_scores_stage1 + (1.0 - args.alpha) * edge_node_mean
+
+    num_edges = h_id_tensor.numel()
+    near_topic_edge_mask = torch.zeros(num_edges, dtype=torch.bool, device=h_id_tensor.device)
+    bridge_edge_mask = torch.zeros(num_edges, dtype=torch.bool, device=h_id_tensor.device)
+
+    if args.inject_strategy == 'fused':
+        return triple_scores_final, triple_scores_final, near_topic_edge_mask, bridge_edge_mask
+
+    num_nodes = node_scores_full.numel()
+    near_topic_node_ids = get_nodes_within_hops(
+        h_id_tensor, t_id_tensor, topic_ids, num_nodes, args.topic_hop
+    )
+    near_topic_node_mask = torch.zeros(num_nodes, dtype=torch.bool, device=h_id_tensor.device)
+    if near_topic_node_ids.numel() > 0:
+        near_topic_node_mask[near_topic_node_ids] = True
+    near_topic_edge_mask = near_topic_node_mask[h_id_tensor] | near_topic_node_mask[t_id_tensor]
+
+    high_node_mask = torch.zeros(num_nodes, dtype=torch.bool, device=h_id_tensor.device)
+    positive_node_ids = torch.nonzero(node_scores_full > 0, as_tuple=False).reshape(-1)
+    if positive_node_ids.numel() > 0:
+        m = min(args.bridge_top_m, positive_node_ids.numel())
+        top_high = torch.topk(node_scores_full[positive_node_ids], m)
+        high_node_ids = positive_node_ids[top_high.indices]
+        high_node_mask[high_node_ids] = True
+
+    h_near = near_topic_node_mask[h_id_tensor]
+    t_near = near_topic_node_mask[t_id_tensor]
+    h_high = high_node_mask[h_id_tensor]
+    t_high = high_node_mask[t_id_tensor]
+    bridge_edge_mask = (h_near & t_high) | (t_near & h_high)
+
+    edge_node_max = torch.maximum(node_scores_full[h_id_tensor], node_scores_full[t_id_tensor])
+    inject_scores = (
+        args.lambda1 * triple_scores_stage1
+        + args.lambda2 * edge_node_max
+        + args.lambda3 * near_topic_edge_mask.float()
+        + args.lambda4 * bridge_edge_mask.float()
+    )
+    return triple_scores_final, inject_scores, near_topic_edge_mask, bridge_edge_mask
+
+
+def build_local_rerank_ids(stage1_ranked_ids, candidate_scores, args):
     k_t = len(stage1_ranked_ids)
     replace_start_idx = args.replace_start - 1
     replace_end_idx = min(args.replace_end, k_t)
@@ -86,8 +168,8 @@ def build_local_rerank_ids(stage1_ranked_ids, triple_scores_final, args):
         return stage1_ranked_ids, 0, False
 
     num_selected = min(args.candidate_x, len(replace_seg), len(pool_seg))
-    pool_id_tensor = torch.as_tensor(pool_seg, dtype=torch.long, device=triple_scores_final.device)
-    pool_scores = triple_scores_final[pool_id_tensor]
+    pool_id_tensor = torch.as_tensor(pool_seg, dtype=torch.long, device=candidate_scores.device)
+    pool_scores = candidate_scores[pool_id_tensor]
     pool_top = torch.topk(pool_scores, num_selected)
 
     selected_ids = [pool_seg[i] for i in pool_top.indices.cpu().tolist()]
@@ -123,13 +205,19 @@ def main(args):
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     validate_local_rerank_args(args)
 
+    if args.stage2_path is None:
+        root_path = os.path.dirname(os.path.abspath(args.path))
+        stage2_path = os.path.join(root_path, 'stage2_cpt.pth')
+    else:
+        stage2_path = args.stage2_path
+
     stage1_cpt = torch.load(args.path, map_location='cpu')
     config = stage1_cpt['config']
     dataset_name = resolve_dataset_name(config, args.dataset)
     set_seed(config['env']['seed'])
     torch.set_num_threads(config['env']['num_threads'])
 
-    stage2_cpt = torch.load(args.stage2_path, map_location='cpu')
+    stage2_cpt = torch.load(stage2_path, map_location='cpu')
     if 'dataset_name' in stage2_cpt and stage2_cpt['dataset_name'] != dataset_name:
         raise ValueError(
             f'Stage2 checkpoint dataset={stage2_cpt["dataset_name"]}, expected {dataset_name}.'
@@ -155,6 +243,9 @@ def main(args):
     local_rerank_applied = 0
     local_rerank_fallback = 0
     local_rerank_partial = 0
+    total_pool_near_topic_edges = 0
+    total_pool_bridge_edges = 0
+    samples_with_pool = 0
     for i in tqdm(range(len(infer_set))):
         raw_sample = infer_set[i]
         sample = collate_retriever([raw_sample])
@@ -171,6 +262,8 @@ def main(args):
         stage2_top_nodes = []
         local_applied_for_sample = False
         local_selected_for_sample = 0
+        near_topic_edges_in_pool = 0
+        bridge_edges_in_pool = 0
 
         if len(h_id_tensor) != 0:
             triple_logits, h_e, _, _ = stage1_model(
@@ -214,12 +307,35 @@ def main(args):
                         float(top_m.values[j].item())
                     ))
 
-            edge_node_scores = (node_scores_full[h_id_tensor] + node_scores_full[t_id_tensor]) / 2.0
-            triple_scores_final = args.alpha * triple_scores_stage1 + (1.0 - args.alpha) * edge_node_scores
+            triple_scores_final, inject_scores, near_topic_edge_mask, bridge_edge_mask = build_inject_scores(
+                h_id_tensor=h_id_tensor,
+                t_id_tensor=t_id_tensor,
+                triple_scores_stage1=triple_scores_stage1,
+                node_scores_full=node_scores_full,
+                topic_ids=topic_ids,
+                args=args,
+            )
+            top_stage1_ids_list = top_stage1_ids.cpu().tolist()
+
+            pool_start_idx = args.candidate_pool_start - 1
+            if pool_start_idx < k_t:
+                pool_ids_for_stats = top_stage1_ids_list[pool_start_idx:]
+                pool_id_tensor_for_stats = torch.as_tensor(
+                    pool_ids_for_stats, dtype=torch.long, device=device
+                )
+                near_topic_edges_in_pool = int(
+                    near_topic_edge_mask[pool_id_tensor_for_stats].sum().item()
+                )
+                bridge_edges_in_pool = int(
+                    bridge_edge_mask[pool_id_tensor_for_stats].sum().item()
+                )
+                total_pool_near_topic_edges += near_topic_edges_in_pool
+                total_pool_bridge_edges += bridge_edges_in_pool
+                samples_with_pool += 1
 
             if args.local_rerank:
                 top_final_ids, local_selected_for_sample, local_applied_for_sample = build_local_rerank_ids(
-                    top_stage1_ids.cpu().tolist(), triple_scores_final, args
+                    top_stage1_ids_list, inject_scores, args
                 )
                 if local_applied_for_sample:
                     local_rerank_applied += 1
@@ -277,8 +393,17 @@ def main(args):
                 'replace_end': args.replace_end,
                 'candidate_pool_start': args.candidate_pool_start,
                 'candidate_x': args.candidate_x,
+                'inject_strategy': args.inject_strategy,
+                'topic_hop': args.topic_hop,
+                'bridge_top_m': args.bridge_top_m,
+                'lambda1': args.lambda1,
+                'lambda2': args.lambda2,
+                'lambda3': args.lambda3,
+                'lambda4': args.lambda4,
                 'local_rerank_applied': local_applied_for_sample,
                 'local_selected': local_selected_for_sample,
+                'near_topic_edges_in_pool': near_topic_edges_in_pool,
+                'bridge_edges_in_pool': bridge_edges_in_pool,
             },
             'q_entity': raw_sample['q_entity'],
             'q_entity_in_graph': [entity_list[e_id] for e_id in raw_sample['q_entity_id_list']],
@@ -292,7 +417,11 @@ def main(args):
 
     if args.output_path is None:
         root_path = os.path.dirname(os.path.abspath(args.path))
-        output_path = os.path.join(root_path, 'retrieval_result_stage2.pth')
+        if args.local_rerank and args.inject_strategy == 'structure':
+            default_name = 'retrieval_result_stage2_structure.pth'
+        else:
+            default_name = 'retrieval_result_stage2.pth'
+        output_path = os.path.join(root_path, default_name)
     else:
         output_path = args.output_path
 
@@ -303,12 +432,23 @@ def main(args):
             f'Local rerank stats: applied={local_rerank_applied}, '
             f'fallback={local_rerank_fallback}, partial={local_rerank_partial}'
         )
+        if args.inject_strategy == 'structure':
+            print(
+                f'Structure inject stats: samples_with_pool={samples_with_pool}, '
+                f'pool_near_topic_edges={total_pool_near_topic_edges}, '
+                f'pool_bridge_edges={total_pool_bridge_edges}'
+            )
 
 
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('-p', '--path', type=str, required=True, help='Path to Stage1 checkpoint cpt.pth')
-    parser.add_argument('--stage2_path', type=str, required=True, help='Path to Stage2 checkpoint stage2_cpt.pth')
+    parser.add_argument(
+        '--stage2_path',
+        type=str,
+        default=None,
+        help='Path to Stage2 checkpoint stage2_cpt.pth (default: beside -p).',
+    )
     parser.add_argument('-d', '--dataset', type=str, choices=['webqsp', 'cwq'], default=None)
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--output_path', type=str, default=None)
@@ -324,15 +464,33 @@ if __name__ == '__main__':
     )
     parser.add_argument('--lock_top_n', type=int, default=50, help='Always keep Stage1 top-N unchanged.')
     parser.add_argument('--preserve_mid_start', type=int, default=51)
-    parser.add_argument('--preserve_mid_end', type=int, default=70)
-    parser.add_argument('--replace_start', type=int, default=71)
+    parser.add_argument('--preserve_mid_end', type=int, default=90)
+    parser.add_argument('--replace_start', type=int, default=91)
     parser.add_argument('--replace_end', type=int, default=100)
     parser.add_argument('--candidate_pool_start', type=int, default=101)
     parser.add_argument(
         '--candidate_x',
         type=int,
-        default=30,
+        default=10,
         help='Number of candidates promoted from candidate pool into replacement slots.',
     )
+    parser.add_argument(
+        '--inject_strategy',
+        type=str,
+        choices=['fused', 'structure'],
+        default='structure',
+        help='Scoring strategy for selecting promoted candidates from the pool.',
+    )
+    parser.add_argument('--topic_hop', type=int, default=2, help='Hop distance for near-topic signal.')
+    parser.add_argument(
+        '--bridge_top_m',
+        type=int,
+        default=50,
+        help='Top-M Stage2 nodes used to detect bridge edges.',
+    )
+    parser.add_argument('--lambda1', type=float, default=1.0, help='Weight for Stage1 edge score in inject scoring.')
+    parser.add_argument('--lambda2', type=float, default=0.2, help='Weight for max endpoint node score.')
+    parser.add_argument('--lambda3', type=float, default=0.25, help='Weight for near-topic edge bonus.')
+    parser.add_argument('--lambda4', type=float, default=0.35, help='Weight for bridge edge bonus.')
 
     main(parser.parse_args())
