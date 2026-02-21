@@ -464,14 +464,14 @@ if __name__ == '__main__':
     )
     parser.add_argument('--lock_top_n', type=int, default=50, help='Always keep Stage1 top-N unchanged.')
     parser.add_argument('--preserve_mid_start', type=int, default=51)
-    parser.add_argument('--preserve_mid_end', type=int, default=90)
-    parser.add_argument('--replace_start', type=int, default=91)
+    parser.add_argument('--preserve_mid_end', type=int, default=85)
+    parser.add_argument('--replace_start', type=int, default=86)
     parser.add_argument('--replace_end', type=int, default=100)
     parser.add_argument('--candidate_pool_start', type=int, default=101)
     parser.add_argument(
         '--candidate_x',
         type=int,
-        default=10,
+        default=15,
         help='Number of candidates promoted from candidate pool into replacement slots.',
     )
     parser.add_argument(
