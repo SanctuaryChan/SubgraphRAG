@@ -66,6 +66,15 @@ python train.py -d D
 ```
 where `D` should be a dataset mentioned in ["Supported Datasets"](#supported-datasets).
 
+Useful Stage1 ranking args (BCE + hard-negative pairwise):
+
+```bash
+python train.py -d D \
+  --pairwise_weight 0.2 --pairwise_margin 0.1 \
+  --hard_neg_k 64 --pos_cap 32 --pairwise_mode hinge \
+  --relation_gated --gate_hidden_dim 64 --gate_dropout 0.0
+```
+
 For logged learning curves, go to the corresponding Wandb interface. 
 
 Once trained, there will be a folder in the current directory of the form `{dataset}_{time}` (e.g., `webqsp_Nov08-01:14:47/`) that stores the trained model checkpoint `cpt.pth`.

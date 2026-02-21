@@ -110,6 +110,7 @@ Structure inject stats: samples_with_pool=1631, pool_near_topic_edges=647581, po
 400       0.985                        0.961              0.949
 500       0.987                        0.969              0.961
 ```
+调整l1-l4参数
 
 ```shell
 (srag1-2) ➜  retrieve git:(dev) ✗ python inference_stage2.py \
@@ -141,4 +142,34 @@ Structure inject stats: samples_with_pool=1631, pool_near_topic_edges=647581, po
   200       0.973                        0.930              0.914
   400       0.985                        0.962              0.949
   500       0.987                        0.969              0.961
+```
+
+固定lambda参数+锁Top50 替85-100 MaxPool
+
+```shell
+(srag1-2) ➜  retrieve git:(dev) ✗ python inference_stage2.py \
+      -p webqsp_Feb13-13:49:52/cpt.pth \
+      --stage2_path webqsp_Feb13-13:49:52/stage2_cpt.pth \
+      -d webqsp \
+      --inject_strategy structure \
+      --topic_hop 1 \
+      --lambda1 0.8 --lambda2 0.1 --lambda3 0.0 --lambda4 0.8 \
+      --preserve_mid_end 85 --replace_start 86 --candidate_x 15 \
+      --output_path webqsp_Feb13-13:49:52/retrieval_result_stage2_structure_strong_86-100.pth
+
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1639/1639 [00:00<00:00, 3179.87it/s]# skipped samples: 0
+# relevant triples | median: 4 | mean: 20 | max: 699
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1639/1639 [04:40<00:00,  5.85it/s]Saved Stage2 retrieval results to: webqsp_Feb13-13:49:52/retrieval_result_stage2_structure_strong_86-100.pth
+Local rerank stats: applied=1631, fallback=7, partial=0
+Structure inject stats: samples_with_pool=1631, pool_near_topic_edges=601077, pool_bridge_edges=244349
+(srag1-2) ➜  retrieve git:(dev) ✗ 
+(srag1-2) ➜  retrieve git:(dev) ✗ python eval.py -d webqsp \
+    -p webqsp_Feb13-13:49:52/retrieval_result_stage2_structure_strong_86-100.pth \ 
+    --k_list 50,100,200,400,500
+  K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+ 50       0.905                        0.827              0.800
+100       0.946                        0.880              0.868
+200       0.973                        0.930              0.915
+400       0.985                        0.962              0.950
+500       0.987                        0.969              0.961
 ```

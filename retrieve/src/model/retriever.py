@@ -16,17 +16,23 @@ class PEConv(MessagePassing):
     def __init__(self):
         super().__init__(aggr='mean')
 
-    def forward(self, edge_index, x):
-        return self.propagate(edge_index, x=x)
+    def forward(self, edge_index, x, edge_gate=None):
+        if edge_gate is None:
+            edge_gate = torch.ones(edge_index.shape[1], device=x.device, dtype=x.dtype)
+        return self.propagate(edge_index, x=x, edge_gate=edge_gate)
 
-    def message(self, x_j):
-        return x_j
+    def message(self, x_j, edge_gate):
+        return x_j * edge_gate.unsqueeze(-1)
 
 class DDE(nn.Module):
     def __init__(
         self,
         num_rounds,
-        num_reverse_rounds
+        num_reverse_rounds,
+        relation_gated=False,
+        gate_hidden_dim=64,
+        gate_dropout=0.0,
+        relation_emb_dim=None,
     ):
         super().__init__()
 
@@ -38,26 +44,52 @@ class DDE(nn.Module):
         self.reverse_layers = nn.ModuleList()
         for _ in range(num_reverse_rounds):
             self.reverse_layers.append(PEConv())
+
+        self.relation_gated = relation_gated
+        if relation_gated:
+            first_linear = (
+                nn.LazyLinear(gate_hidden_dim)
+                if relation_emb_dim is None
+                else nn.Linear(relation_emb_dim, gate_hidden_dim)
+            )
+            self.relation_gate = nn.Sequential(
+                first_linear,
+                nn.ReLU(),
+                nn.Dropout(gate_dropout),
+                nn.Linear(gate_hidden_dim, 1),
+            )
+        else:
+            self.relation_gate = None
     
     def forward(
         self,
         topic_entity_one_hot,
         edge_index,
-        reverse_edge_index
+        reverse_edge_index,
+        r_id_tensor=None,
+        relation_embs=None,
     ):
         result_list = []
-        
+        edge_gate = None
+        if self.relation_gated:
+            if r_id_tensor is None or relation_embs is None:
+                raise ValueError(
+                    'r_id_tensor and relation_embs are required when relation_gated=True.'
+                )
+            rel_edge_emb = relation_embs[r_id_tensor]
+            edge_gate = torch.sigmoid(self.relation_gate(rel_edge_emb)).reshape(-1)
+
         h_pe = topic_entity_one_hot
         for layer in self.layers:
             # 每一轮PEConv都会让信号沿着 edge_index 向外走一步，因此每一轮都会产生一个新的 h_pe，这些 h_pe 就是 DDE 的多轮传播结果。
             # 如果 num_rounds=3，result_list 的前三个元素分别代表了 1-hop、2-hop、3-hop 的正向可达性特征。
-            h_pe = layer(edge_index, h_pe)
+            h_pe = layer(edge_index, h_pe, edge_gate=edge_gate)
             result_list.append(h_pe)
         
         h_pe_rev = topic_entity_one_hot
         for layer in self.reverse_layers:
             # 反向同理
-            h_pe_rev = layer(reverse_edge_index, h_pe_rev)
+            h_pe_rev = layer(reverse_edge_index, h_pe_rev, edge_gate=edge_gate)
             result_list.append(h_pe_rev)
         
         return result_list
@@ -142,7 +174,13 @@ class Retriever(nn.Module):
         ], dim=0)
 
         # 调用DDE计算每个实体在图结构中相对于“问题中心”的位置
-        dde_list = self.dde(topic_entity_one_hot, edge_index, reverse_edge_index)
+        dde_list = self.dde(
+            topic_entity_one_hot,
+            edge_index,
+            reverse_edge_index,
+            r_id_tensor=r_id_tensor,
+            relation_embs=relation_embs,
+        )
 
         # 将DDE的输出拼接到实体特征中，作为最终的结构特征输入到后续的三元组打分模块中。
         # DDE的输出是一个列表，每个元素都是一个形状为（实体数量，DDE特征维度）的张量，这些张量分别对应不同轮数的消息传递结果。

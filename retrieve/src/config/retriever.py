@@ -10,6 +10,9 @@ class DatasetYaml(pydantic.BaseModel):
 class DDEYaml(pydantic.BaseModel):
     num_rounds: int
     num_reverse_rounds: int
+    relation_gated: bool = False
+    gate_hidden_dim: int = 64
+    gate_dropout: float = 0.0
 
 class RetrieverYaml(pydantic.BaseModel):
     topic_pe: bool
