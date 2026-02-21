@@ -59,7 +59,8 @@ Hal Score: 81.21548146896676
 
 LLM：Llama-3.1-8B-Instruct
 
-锁Top50, 插入71-100
+锁Top50 替91-100 MaxPool + 使用结构感知注入分重排
+
 
 ### WebQSP
 
