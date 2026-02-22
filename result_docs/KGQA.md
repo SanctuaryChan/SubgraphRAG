@@ -74,3 +74,22 @@ Exact Match: 48.77149877149877
 Totally Wrong: 15.724815724815725
 Hal Score: 80.97078046438659
 ```
+
+
+---
+## loss + DDE 小改
+
+LLM：Llama-3.1-8B-Instruct
+
+### WebQSP
+
+```shell
+Hit: 85.01228501228
+Hit@1: 80.58968058968058
+Macro F1: 69.25070342452139
+Macro Precision: 76.285810589153
+Macro Recall: 70.9936797845578
+Exact Match: 48.64864864864865
+Totally Wrong: 15.47911547911548
+Hal Score: 80.99944344211734
+```
