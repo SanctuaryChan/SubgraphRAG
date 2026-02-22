@@ -213,3 +213,31 @@ Structure inject stats: samples_with_pool=1631, pool_near_topic_edges=601077, po
   400       0.986                        0.970              0.955
   500       0.989                        0.976              0.962
 ```
+
+## G4+锁Top50 替91-100 MaxPool
+
+```shell
+(srag1-2) ➜  retrieve git:(dev) python inference_stage2.py \
+      -p G4_webqsp_Feb21-12:43:11/cpt.pth \
+      --stage2_path G4_webqsp_Feb21-12:43:11/stage2_cpt.pth \
+      -d webqsp \
+      --inject_strategy structure \
+      --topic_hop 2 \
+      --lambda1 0.8 --lambda2 0.1 --lambda3 0.0 --lambda4 0.8 \
+      --preserve_mid_end 90 --replace_start 91 --candidate_x 10 \
+      --output_path G4_webqsp_Feb21-12:43:11/retrieval_result_stage2_structure_strong_91-100.pth
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1639/1639 [00:00<00:00, 2915.27it/s]# skipped samples: 0
+# relevant triples | median: 4 | mean: 20 | max: 699
+/home/cj/.conda/envs/srag1-2/lib/python3.10/site-packages/torch/nn/modules/lazy.py:180: UserWarning: Lazy modules are a new feature under heavy development so changes to the API or functionality can happen at any moment.
+  warnings.warn('Lazy modules are a new feature under heavy development '
+ 39%|█████████████████████████████████████████████████████████████████████████████▎                                                                                                                       | 643/1639 [02:02<03:10,  5.24it/s]100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1639/1639 [05:11<00:00,  5.25it/s]Saved Stage2 retrieval results to: G4_webqsp_Feb21-12:43:11/retrieval_result_stage2_structure_strong_91-100.pth
+Local rerank stats: applied=1631, fallback=7, partial=0
+Structure inject stats: samples_with_pool=1631, pool_near_topic_edges=647581, pool_bridge_edges=415466
+(srag1-2) ➜  retrieve git:(dev) python eval.py -d webqsp -p G4_webqsp_Feb21-12:43:11/retrieval_result_stage2_structure_strong_91-100.pth --k_list 50,100,200,400,500 | tee G4_webqsp_Feb21-12:43:11/eval_stage2_structure_strong 91-100.txt
+  K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+ 50       0.910                        0.836              0.810
+100       0.952                        0.894              0.872
+200       0.974                        0.938              0.918
+400       0.986                        0.970              0.956
+500       0.989                        0.976              0.962
+```

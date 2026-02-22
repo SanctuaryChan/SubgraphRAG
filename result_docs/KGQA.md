@@ -77,7 +77,7 @@ Hal Score: 80.97078046438659
 
 
 ---
-## loss + DDE 小改
+## loss + DDE 小改（G4）
 
 LLM：Llama-3.1-8B-Instruct
 
@@ -93,3 +93,41 @@ Exact Match: 48.64864864864865
 Totally Wrong: 15.47911547911548
 Hal Score: 80.99944344211734
 ```
+
+
+## loss + DDE 小改 G4 + rerank(answer_cap=5)
+
+LLM：Llama-3.1-8B-Instruct
+
+### WebQSP
+
+```shell
+Hit: 84.45945945945945
+Hit@1: 79.7911547911548
+Macro F1: 66.17617403799278
+Macro Precision: 77.1130221130221
+Macro Recall: 65.99814416266517
+Exact Match: 46.990171990171994
+Totally Wrong: 16.03194103194103
+Hal Score: 81.61588861588861%  
+```
+
+
+## loss + DDE 小改 G4 + rerank(answer_cap=0)
+
+LLM：Llama-3.1-8B-Instruct
+
+### WebQSP
+
+```shell
+Hit: 85.07371007371007
+Hit@1: 79.7911547911548
+Macro F1: 69.46441416884412
+Macro Precision: 76.54643967014468
+Macro Recall: 71.02968251774907
+Exact Match: 49.07862407862408
+Totally Wrong: 15.41769041769042
+Hal Score: 81.16290166186563
+```
+
+
