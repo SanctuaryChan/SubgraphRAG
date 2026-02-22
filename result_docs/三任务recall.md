@@ -173,3 +173,43 @@ Structure inject stats: samples_with_pool=1631, pool_near_topic_edges=601077, po
 400       0.985                        0.962              0.950
 500       0.987                        0.969              0.961
 ```
+
+## G0-G4 小改DDE+loss
+
+```shell
+  (srag1-2) ➜  retrieve git:(dev) ✗ cat G0_webqsp_Feb21-12:16:39/eval_stage1.txt
+    K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+   50       0.896                        0.814              0.785
+  100       0.942                        0.873              0.842
+  200       0.973                        0.922              0.899
+  400       0.989                        0.963              0.953
+  500       0.990                        0.970              0.965
+  (srag1-2) ➜  retrieve git:(dev) ✗ cat G1_webqsp_Feb21-12:22:37/eval_stage1.txt
+    K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+   50       0.909                        0.833              0.807
+  100       0.944                        0.887              0.866
+  200       0.971                        0.931              0.907
+  400       0.986                        0.964              0.951
+  500       0.990                        0.974              0.961
+  (srag1-2) ➜  retrieve git:(dev) ✗ cat G2_webqsp_Feb21-12:32:30/eval_stage1.txt
+    K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+   50       0.894                        0.827              0.810
+  100       0.939                        0.889              0.863
+  200       0.970                        0.934              0.910
+  400       0.987                        0.965              0.947
+  500       0.990                        0.971              0.958
+  (srag1-2) ➜  retrieve git:(dev) ✗ cat G3_webqsp_Feb21-12:37:09/eval_stage1.txt
+    K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+   50       0.910                        0.827              0.809
+  100       0.955                        0.889              0.870
+  200       0.978                        0.931              0.915
+  400       0.989                        0.966              0.956
+  500       0.991                        0.973              0.963
+  (srag1-2) ➜  retrieve git:(dev) ✗ cat G4_webqsp_Feb21-12:43:11/eval_stage1.txt
+    K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+   50       0.910                        0.836              0.810
+  100       0.953                        0.896              0.869
+  200       0.974                        0.938              0.915
+  400       0.986                        0.970              0.955
+  500       0.989                        0.976              0.962
+```
