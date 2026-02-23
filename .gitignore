@@ -5,3 +5,4 @@ retrieve/data_files
 .idea
 .DS_Store
 SubgraphRAG.pdf
+gnn_readonly
