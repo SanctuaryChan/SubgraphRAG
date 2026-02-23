@@ -74,6 +74,30 @@ python inference.py -p P
 ```
 where `P` is the path to a saved model checkpoint. The predicted retrieval result will be stored in the same folder as the model checkpoint. For example, if `P` is `webqsp_Nov08-01:14:47/cpt.pth`, then the retrieval result will be saved as `webqsp_Nov08-01:14:47/retrieval_result.pth`.
 
+Backbone-first inference (no additional training) is also supported:
+
+```bash
+python inference_backbone.py \
+  -p P -d D \
+  --backbone_budget 40 \
+  --output_path O
+```
+
+with defaults:
+- `topK_reason=100`
+- `construct_from_top=200`
+- `candidate_top_m=20`
+- `max_paths_per_candidate=2`
+- `path_hop_cap=4`
+
+You can run a small grid by changing `--backbone_budget` to `20`, `40`, and `60` (fill budget is auto set to `100 - backbone_budget` when `topK_reason=100`).
+
+Or use the helper script:
+
+```bash
+./run_backbone_grid.sh P D
+```
+
 ### Evaluation
 
 ```bash
