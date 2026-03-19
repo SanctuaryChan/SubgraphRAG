@@ -11,6 +11,7 @@
     * [Training](#training)
     * [Inference](#inference)
     * [Evaluation](#evaluation)
+- [1-3 Surrogate Hyperparameter Sweep (No Retraining)](#1-3-surrogate-hyperparameter-sweep-no-retraining)
 
 ## Supported Datasets
 
@@ -80,3 +81,58 @@ where `P` is the path to a saved model checkpoint. The predicted retrieval resul
 python eval.py -d D -p P
 ```
 where `D` should be a dataset mentioned in ["Supported Datasets"](#supported-datasets) and `P` is the path to [inference result](#inference), e.g., `webqsp_Nov08-01:14:47/retrieval_result.pth`.
+
+## 1-3 Surrogate Hyperparameter Sweep (No Retraining)
+
+This analysis script sweeps surrogate-target hyperparameters on a fixed `retrieval_result.pth` (no retraining), using:
+
+- `delta` (near-shortest slack)
+- `p_near` (cap on near-shortest triples)
+- `b_type` (per-entity cap for auxiliary type-like triples)
+
+The script uses proxy metrics on Top-`k_eval` triples:
+
+- `Answer Recall@k_eval`
+- `Path Coverage@k_eval`
+- `score = 0.5 * AER + 0.5 * PathCoverage`
+
+### Run
+
+WebQSP:
+
+```bash
+python sweep_surrogate_hparams.py \
+  -d webqsp \
+  -p webqsp_Feb13-13:49:52/retrieval_result.pth \
+  --k_eval 20 \
+  --delta_list 0,1,2,3 \
+  --pnear_list 50,100,200,300,500 \
+  --btype_list 0,1,2,3,5 \
+  --alpha 0.5 \
+  --beta 0.2 \
+  --out_dir webqsp_surrogate_sweep
+```
+
+CWQ:
+
+```bash
+python sweep_surrogate_hparams.py \
+  -d cwq \
+  -p cwq_Feb13-13:49:52/retrieval_result.pth \
+  --k_eval 20 \
+  --delta_list 0,1,2,3 \
+  --pnear_list 50,100,200,300,500 \
+  --btype_list 0,1,2,3,5 \
+  --alpha 0.5 \
+  --beta 0.2 \
+  --out_dir cwq_surrogate_sweep
+```
+
+### Outputs
+
+The `--out_dir` folder contains:
+
+- `all_results.csv`: all parameter combinations.
+- `top_configs.csv`: top configs sorted by `score`.
+- `recommended_range.json`: recommended interval from top-ratio configs.
+- `run_meta.json`: run settings and sample statistics.
