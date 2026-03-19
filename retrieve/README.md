@@ -96,6 +96,10 @@ The script uses proxy metrics on Top-`k_eval` triples:
 - `Path Coverage@k_eval`
 - `score = 0.5 * AER + 0.5 * PathCoverage`
 
+Evaluation mode:
+
+- all-sample zero-fill: every question is included in the denominator; samples that cannot be evaluated for a metric are counted as `0`.
+
 ### Run
 
 WebQSP:

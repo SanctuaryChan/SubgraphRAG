@@ -209,68 +209,78 @@ def get_topk_indices(scores, k):
 
 
 def evaluate_combo(caches, delta, p_near, b_type, alpha, beta, k_eval):
+    total_samples = len(caches)
+    if total_samples == 0:
+        return 0.0, 0.0, 0.0, 0, 0, 0, 0
+
     aer_total = 0.0
     pc_total = 0.0
-    valid_count = 0
+    rankable_count = 0
+    aer_effective_count = 0
+    pc_effective_count = 0
 
     for cache in caches:
-        if not cache['valid']:
-            continue
         triples = cache['triples']
         n = len(triples)
-        if n == 0:
-            continue
-
-        weights = np.zeros((n,), dtype=np.float32)
-
-        if len(cache['p_sp_indices']) > 0:
-            weights[cache['p_sp_indices']] = 1.0
-
-        l_values = cache['l_values']
-        near_mask = (l_values > cache['d_star']) & (l_values <= (cache['d_star'] + delta))
-        near_raw = np.where(near_mask)[0]
-        if near_raw.size > 0 and p_near > 0:
-            near_sorted = near_raw[np.argsort(cache['sem_scores'][near_raw])[::-1]]
-            near_selected = near_sorted[:p_near]
-            weights[near_selected] = np.maximum(weights[near_selected], alpha)
-
-        if b_type > 0 and len(cache['type_candidates_by_entity']) > 0:
-            aux_idx_set = set()
-            for idx_arr in cache['type_candidates_by_entity'].values():
-                if len(idx_arr) == 0:
-                    continue
-                for idx in idx_arr[:b_type]:
-                    aux_idx_set.add(int(idx))
-            if len(aux_idx_set) > 0:
-                aux_idx = np.asarray(sorted(aux_idx_set), dtype=np.int64)
-                weights[aux_idx] = np.maximum(weights[aux_idx], beta)
-
-        rank_scores = (RANK_WEIGHT * weights) + (SEM_WEIGHT * cache['sem_scores_norm'])
-        top_idx = get_topk_indices(rank_scores, min(k_eval, n))
-
-        top_triples = [triples[int(i)] for i in top_idx]
+        top_triples = []
         top_entities = set()
-        for h, _, t in top_triples:
-            top_entities.add(h)
-            top_entities.add(t)
+
+        if n > 0:
+            rankable_count += 1
+            weights = np.zeros((n,), dtype=np.float32)
+
+            if cache['valid']:
+                if len(cache['p_sp_indices']) > 0:
+                    weights[cache['p_sp_indices']] = 1.0
+
+                l_values = cache['l_values']
+                near_mask = (l_values > cache['d_star']) & (l_values <= (cache['d_star'] + delta))
+                near_raw = np.where(near_mask)[0]
+                if near_raw.size > 0 and p_near > 0:
+                    near_sorted = near_raw[np.argsort(cache['sem_scores'][near_raw])[::-1]]
+                    near_selected = near_sorted[:p_near]
+                    weights[near_selected] = np.maximum(weights[near_selected], alpha)
+
+                if b_type > 0 and len(cache['type_candidates_by_entity']) > 0:
+                    aux_idx_set = set()
+                    for idx_arr in cache['type_candidates_by_entity'].values():
+                        if len(idx_arr) == 0:
+                            continue
+                        for idx in idx_arr[:b_type]:
+                            aux_idx_set.add(int(idx))
+                    if len(aux_idx_set) > 0:
+                        aux_idx = np.asarray(sorted(aux_idx_set), dtype=np.int64)
+                        weights[aux_idx] = np.maximum(weights[aux_idx], beta)
+
+            rank_scores = (RANK_WEIGHT * weights) + (SEM_WEIGHT * cache['sem_scores_norm'])
+            top_idx = get_topk_indices(rank_scores, min(k_eval, n))
+            top_triples = [triples[int(i)] for i in top_idx]
+            for h, _, t in top_triples:
+                top_entities.add(h)
+                top_entities.add(t)
 
         a_entities = cache['a_entities']
-        if len(a_entities) == 0:
-            continue
-        aer = len(top_entities & a_entities) / len(a_entities)
-        pc = 1.0 if has_connecting_path(top_triples, cache['q_entities'], a_entities) else 0.0
+        q_entities = cache['q_entities']
+
+        if (n > 0) and (len(a_entities) > 0):
+            aer = len(top_entities & a_entities) / len(a_entities)
+            aer_effective_count += 1
+        else:
+            aer = 0.0
+
+        if (n > 0) and (len(q_entities) > 0) and (len(a_entities) > 0):
+            pc = 1.0 if has_connecting_path(top_triples, q_entities, a_entities) else 0.0
+            pc_effective_count += 1
+        else:
+            pc = 0.0
 
         aer_total += aer
         pc_total += pc
-        valid_count += 1
 
-    if valid_count == 0:
-        return 0.0, 0.0, 0.0, 0
-
-    aer_mean = aer_total / valid_count
-    pc_mean = pc_total / valid_count
+    aer_mean = aer_total / total_samples
+    pc_mean = pc_total / total_samples
     combo_score = 0.5 * aer_mean + 0.5 * pc_mean
-    return aer_mean, pc_mean, combo_score, valid_count
+    return aer_mean, pc_mean, combo_score, total_samples, rankable_count, aer_effective_count, pc_effective_count
 
 
 def save_csv(path, rows, fieldnames):
@@ -307,11 +317,11 @@ def main(args):
         )
 
     num_samples = len(caches)
-    num_valid_base = sum(1 for c in caches if c['valid'])
+    num_surrogate_valid_base = sum(1 for c in caches if c['valid'])
 
     all_results = []
     for delta, p_near, b_type in itertools.product(delta_list, pnear_list, btype_list):
-        aer, pc, combo_score, num_valid = evaluate_combo(
+        aer, pc, combo_score, num_total, num_rankable, num_aer_eff, num_pc_eff = evaluate_combo(
             caches=caches,
             delta=delta,
             p_near=p_near,
@@ -330,8 +340,12 @@ def main(args):
             'b_type': b_type,
             'alpha': args.alpha,
             'beta': args.beta,
-            'num_samples': num_samples,
-            'num_valid_samples': num_valid,
+            'num_samples': num_total,
+            'num_valid_samples': num_total,
+            'num_surrogate_valid_samples': num_surrogate_valid_base,
+            'num_rankable_samples': num_rankable,
+            'num_aer_effective_samples': num_aer_eff,
+            'num_pc_effective_samples': num_pc_eff,
             'aer_at_k': round(aer, 6),
             'path_coverage_at_k': round(pc, 6),
             'score': round(combo_score, 6),
@@ -358,10 +372,11 @@ def main(args):
         'beta': args.beta,
         'rtype_keywords': rtype_keywords,
         'top_ratio': args.top_ratio,
-        'num_samples': num_samples,
-        'num_valid_base': num_valid_base,
+        'num_samples_total': num_samples,
+        'num_surrogate_valid_base': num_surrogate_valid_base,
         'num_combinations': len(all_results),
         'elapsed_seconds': round(time.time() - start_t, 3),
+        'evaluation_mode': 'all-sample-zero-fill',
     }
 
     rec_json = {
@@ -383,6 +398,8 @@ def main(args):
     fields = [
         'dataset', 'k_eval', 'candidate_k', 'delta', 'p_near', 'b_type',
         'alpha', 'beta', 'num_samples', 'num_valid_samples',
+        'num_surrogate_valid_samples', 'num_rankable_samples',
+        'num_aer_effective_samples', 'num_pc_effective_samples',
         'aer_at_k', 'path_coverage_at_k', 'score'
     ]
     save_csv(all_results_csv, all_results, fields)
