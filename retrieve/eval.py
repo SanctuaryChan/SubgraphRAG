@@ -1,6 +1,48 @@
+from collections import deque
+
 import numpy as np
 import pandas as pd
 import torch
+
+
+def build_undirected_adj(triples):
+    adj = dict()
+    for h, _, t in triples:
+        if h not in adj:
+            adj[h] = set()
+        if t not in adj:
+            adj[t] = set()
+        adj[h].add(t)
+        adj[t].add(h)
+    return adj
+
+
+def has_connected_path(adj, source_entities, target_entities):
+    if (len(source_entities) == 0) or (len(target_entities) == 0):
+        return False
+
+    target_entities = set(target_entities)
+    visited = set()
+    q = deque()
+
+    for source in source_entities:
+        if source in target_entities:
+            return True
+        if source in adj:
+            visited.add(source)
+            q.append(source)
+
+    while len(q) > 0:
+        cur = q.popleft()
+        for nxt in adj.get(cur, []):
+            if nxt in target_entities:
+                return True
+            if nxt not in visited:
+                visited.add(nxt)
+                q.append(nxt)
+
+    return False
+
 
 def main(args):
     pred_dict = torch.load(args.path)
@@ -12,14 +54,26 @@ def main(args):
         metric_dict[f'ans_recall@{k}'] = []
         metric_dict[f'shortest_path_triple_recall@{k}'] = []
         metric_dict[f'gpt_triple_recall@{k}'] = []
+        metric_dict[f'path_coverage@{k}'] = []
     
     for sample_id in pred_dict:
-        if len(pred_dict[sample_id]['scored_triples']) == 0:
+        scored_triples = pred_dict[sample_id]['scored_triples']
+        q_entity_in_graph = set(pred_dict[sample_id]['q_entity_in_graph'])
+        a_entity_in_graph = set(pred_dict[sample_id]['a_entity_in_graph'])
+
+        for k in k_list:
+            triples_k = [(h, r, t) for h, r, t, _ in scored_triples[:k]]
+            graph_k = build_undirected_adj(triples_k)
+            if has_connected_path(graph_k, q_entity_in_graph, a_entity_in_graph):
+                metric_dict[f'path_coverage@{k}'].append(1.0)
+            else:
+                metric_dict[f'path_coverage@{k}'].append(0.0)
+
+        if len(scored_triples) == 0:
             continue
         
-        h_list, r_list, t_list, _ = zip(*pred_dict[sample_id]['scored_triples'])
+        h_list, r_list, t_list, _ = zip(*scored_triples)
         
-        a_entity_in_graph = set(pred_dict[sample_id]['a_entity_in_graph'])
         if len(a_entity_in_graph) > 0:
             for k in k_list:
                 entities_k = set(h_list[:k] + t_list[:k])
@@ -57,6 +111,9 @@ def main(args):
         ],
         'gpt_triple_recall': [
             round(metric_dict[f'gpt_triple_recall@{k}'], 3) for k in k_list
+        ],
+        'path_coverage': [
+            round(metric_dict[f'path_coverage@{k}'], 3) for k in k_list
         ]
     }
     df = pd.DataFrame(table_dict)
