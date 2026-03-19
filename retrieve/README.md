@@ -90,6 +90,12 @@ This analysis script sweeps surrogate-target hyperparameters on a fixed `retriev
 - `p_near` (cap on near-shortest triples)
 - `b_type` (per-entity cap for auxiliary type-like triples)
 
+Surrogate target mode (`--target_mode`):
+
+- `gold`: use gold answer entities as surrogate targets (answer-aware, optimistic upper bound).
+- `pseudo`: mine pseudo target entities from retrieved triples (no gold leakage in rerank).
+- `topic_only`: use only topic-side structure, no target entities in rerank.
+
 The script uses proxy metrics on Top-`k_eval` triples:
 
 - `Answer Recall@k_eval`
@@ -100,14 +106,20 @@ Evaluation mode:
 
 - all-sample zero-fill: every question is included in the denominator; samples that cannot be evaluated for a metric are counted as `0`.
 
+Important:
+
+- In `pseudo/topic_only`, gold answers are not used to build rerank signals.
+- Gold answers are still used at evaluation time to compute `AER@k_eval` and `PathCoverage@k_eval`.
+
 ### Run
 
-WebQSP:
+WebQSP (gold mode, compatible with earlier behavior):
 
 ```bash
 python sweep_surrogate_hparams.py \
   -d webqsp \
   -p webqsp_Feb13-13:49:52/retrieval_result.pth \
+  --target_mode gold \
   --k_eval 20 \
   --delta_list 0,1,2,3 \
   --pnear_list 50,100,200,300,500 \
@@ -117,26 +129,45 @@ python sweep_surrogate_hparams.py \
   --out_dir webqsp_surrogate_sweep
 ```
 
-CWQ:
+WebQSP (pseudo-target mode, no training):
+
+```bash
+python sweep_surrogate_hparams.py \
+  -d webqsp \
+  -p webqsp_Feb13-13:49:52/retrieval_result.pth \
+  --target_mode pseudo \
+  --pseudo_pool_k 100 \
+  --pseudo_top_m 3 \
+  --k_eval 20 \
+  --delta_list 0,1,2,3 \
+  --pnear_list 0,1,2,5,10,15,20,30 \
+  --btype_list 0,1,2,4,8,16 \
+  --alpha 0.5 \
+  --beta 0.2 \
+  --out_dir webqsp_surrogate_sweep_pseudo
+```
+
+CWQ (topic-only mode, no target entities in rerank):
 
 ```bash
 python sweep_surrogate_hparams.py \
   -d cwq \
-  -p cwq_Feb13-13:49:52/retrieval_result.pth \
+  -p cwq_Feb13-14:03:57/retrieval_result.pth \
+  --target_mode topic_only \
   --k_eval 20 \
   --delta_list 0,1,2,3 \
-  --pnear_list 50,100,200,300,500 \
-  --btype_list 0,1,2,3,5 \
+  --pnear_list 0,1,2,5,10,15,20,30 \
+  --btype_list 0,1,2,4,8,16 \
   --alpha 0.5 \
   --beta 0.2 \
-  --out_dir cwq_surrogate_sweep
+  --out_dir cwq_surrogate_sweep_topic_only
 ```
 
 ### Outputs
 
 The `--out_dir` folder contains:
 
-- `all_results.csv`: all parameter combinations.
+- `all_results.csv`: all parameter combinations, including `target_mode` and pseudo settings.
 - `top_configs.csv`: top configs sorted by `score`.
 - `recommended_range.json`: recommended interval from top-ratio configs.
 - `run_meta.json`: run settings and sample statistics.

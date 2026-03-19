@@ -99,11 +99,44 @@ def has_connecting_path(triples, source_entities, target_entities):
 
 
 def relation_is_type_like(relation, keywords):
-    relation_l = relation.lower()
+    relation_l = str(relation).lower()
     return any(kw in relation_l for kw in keywords)
 
 
-def make_sample_cache(sample_id, sample, candidate_k, rtype_keywords):
+def select_pseudo_targets(triples, sem_scores, q_entities, pseudo_pool_k, pseudo_top_m):
+    if (pseudo_pool_k <= 0) or (pseudo_top_m <= 0):
+        return set()
+
+    pool_n = min(len(triples), pseudo_pool_k)
+    if pool_n <= 0:
+        return set()
+
+    entity_best_score = {}
+    for i in range(pool_n):
+        h, _, t = triples[i]
+        s = float(sem_scores[i])
+        if h not in q_entities:
+            prev = entity_best_score.get(h)
+            if (prev is None) or (s > prev):
+                entity_best_score[h] = s
+        if t not in q_entities:
+            prev = entity_best_score.get(t)
+            if (prev is None) or (s > prev):
+                entity_best_score[t] = s
+
+    ranked = sorted(entity_best_score.items(), key=lambda x: (-x[1], str(x[0])))
+    return set(entity for entity, _ in ranked[:pseudo_top_m])
+
+
+def make_sample_cache(
+    sample_id,
+    sample,
+    candidate_k,
+    rtype_keywords,
+    target_mode,
+    pseudo_pool_k,
+    pseudo_top_m,
+):
     scored_triples = sample.get('scored_triples', [])
     scored_triples = scored_triples[:candidate_k]
 
@@ -114,16 +147,20 @@ def make_sample_cache(sample_id, sample, candidate_k, rtype_keywords):
         'sem_scores': np.array([], dtype=np.float32),
         'sem_scores_norm': np.array([], dtype=np.float32),
         'q_entities': set(sample.get('q_entity_in_graph', [])),
-        'a_entities': set(sample.get('a_entity_in_graph', [])),
+        'eval_a_entities': set(sample.get('a_entity_in_graph', [])),
+        'surrogate_targets': set(),
         'd_star': float('inf'),
         'l_values': np.array([], dtype=np.float32),
         'p_sp_indices': np.array([], dtype=np.int64),
         'type_candidates_by_entity': {},
+        'target_mode': target_mode,
     }
 
     if len(scored_triples) == 0:
         return cache
-    if (len(cache['q_entities']) == 0) or (len(cache['a_entities']) == 0):
+    if len(cache['q_entities']) == 0:
+        return cache
+    if (target_mode == 'gold') and (len(cache['eval_a_entities']) == 0):
         return cache
 
     triples = []
@@ -141,30 +178,60 @@ def make_sample_cache(sample_id, sample, candidate_k, rtype_keywords):
     if len(triples) == 0:
         return cache
 
+    sem_arr = np.asarray(sem_scores, dtype=np.float32)
+    sem_arr_norm = normalize_scores(sem_arr)
+
+    surrogate_targets = set()
+    if target_mode == 'gold':
+        surrogate_targets = set(cache['eval_a_entities'])
+    elif target_mode == 'pseudo':
+        surrogate_targets = select_pseudo_targets(
+            triples=triples,
+            sem_scores=sem_arr,
+            q_entities=cache['q_entities'],
+            pseudo_pool_k=min(max(0, pseudo_pool_k), candidate_k),
+            pseudo_top_m=max(0, pseudo_top_m),
+        )
+    elif target_mode == 'topic_only':
+        surrogate_targets = set()
+    else:
+        raise ValueError(f'Unsupported target_mode: {target_mode}')
+
+    cache['triples'] = triples
+    cache['sem_scores'] = sem_arr
+    cache['sem_scores_norm'] = sem_arr_norm
+    cache['surrogate_targets'] = surrogate_targets
+
     adj = build_undirected_adj_from_triples(triples)
     dist_s = multi_source_bfs(adj, cache['q_entities'])
-    dist_a = multi_source_bfs(adj, cache['a_entities'])
-
-    d_star = float('inf')
-    for a in cache['a_entities']:
-        if a in dist_s:
-            d_star = min(d_star, dist_s[a])
-
-    if not math.isfinite(d_star):
-        cache['triples'] = triples
-        cache['sem_scores'] = np.asarray(sem_scores, dtype=np.float32)
-        cache['sem_scores_norm'] = normalize_scores(cache['sem_scores'])
-        return cache
-
     l_values = np.full((len(triples),), np.inf, dtype=np.float32)
-    for i, (h, _, t) in enumerate(triples):
-        l1 = dist_s.get(h, np.inf) + 1 + dist_a.get(t, np.inf)
-        l2 = dist_s.get(t, np.inf) + 1 + dist_a.get(h, np.inf)
-        l_values[i] = min(l1, l2)
+    p_sp_indices = np.array([], dtype=np.int64)
+    d_star = float('inf')
 
-    p_sp_indices = np.where(l_values == d_star)[0].astype(np.int64)
+    if target_mode in ['gold', 'pseudo']:
+        if len(surrogate_targets) == 0:
+            return cache
+        dist_target = multi_source_bfs(adj, surrogate_targets)
+        for a in surrogate_targets:
+            if a in dist_s:
+                d_star = min(d_star, dist_s[a])
+        if not math.isfinite(d_star):
+            return cache
 
-    anchor_entities = set(cache['q_entities']) | set(cache['a_entities'])
+        for i, (h, _, t) in enumerate(triples):
+            l1 = dist_s.get(h, np.inf) + 1 + dist_target.get(t, np.inf)
+            l2 = dist_s.get(t, np.inf) + 1 + dist_target.get(h, np.inf)
+            l_values[i] = min(l1, l2)
+        p_sp_indices = np.where(l_values == d_star)[0].astype(np.int64)
+        valid = True
+    else:
+        d_star = 0.0
+        for i, (h, _, t) in enumerate(triples):
+            l_values[i] = min(dist_s.get(h, np.inf), dist_s.get(t, np.inf))
+        p_sp_indices = np.where(l_values == 0.0)[0].astype(np.int64)
+        valid = len(p_sp_indices) > 0
+
+    anchor_entities = set(cache['q_entities']) | set(surrogate_targets)
     for idx in p_sp_indices:
         h, _, t = triples[int(idx)]
         anchor_entities.add(h)
@@ -179,16 +246,12 @@ def make_sample_cache(sample_id, sample, candidate_k, rtype_keywords):
         if t in anchor_entities:
             type_candidates_by_entity.setdefault(t, []).append(idx)
 
-    sem_arr = np.asarray(sem_scores, dtype=np.float32)
     for entity, idx_list in type_candidates_by_entity.items():
         uniq = sorted(set(idx_list), key=lambda x: sem_arr[x], reverse=True)
         type_candidates_by_entity[entity] = np.asarray(uniq, dtype=np.int64)
 
     cache.update({
-        'valid': True,
-        'triples': triples,
-        'sem_scores': sem_arr,
-        'sem_scores_norm': normalize_scores(sem_arr),
+        'valid': valid,
         'd_star': float(d_star),
         'l_values': l_values,
         'p_sp_indices': p_sp_indices,
@@ -259,7 +322,7 @@ def evaluate_combo(caches, delta, p_near, b_type, alpha, beta, k_eval):
                 top_entities.add(h)
                 top_entities.add(t)
 
-        a_entities = cache['a_entities']
+        a_entities = cache['eval_a_entities']
         q_entities = cache['q_entities']
 
         if (n > 0) and (len(a_entities) > 0):
@@ -313,6 +376,9 @@ def main(args):
                 sample=sample,
                 candidate_k=args.candidate_k,
                 rtype_keywords=rtype_keywords,
+                target_mode=args.target_mode,
+                pseudo_pool_k=args.pseudo_pool_k,
+                pseudo_top_m=args.pseudo_top_m,
             )
         )
 
@@ -333,6 +399,7 @@ def main(args):
 
         all_results.append({
             'dataset': args.dataset,
+            'target_mode': args.target_mode,
             'k_eval': args.k_eval,
             'candidate_k': args.candidate_k,
             'delta': delta,
@@ -340,6 +407,8 @@ def main(args):
             'b_type': b_type,
             'alpha': args.alpha,
             'beta': args.beta,
+            'pseudo_pool_k': args.pseudo_pool_k,
+            'pseudo_top_m': args.pseudo_top_m,
             'num_samples': num_total,
             'num_valid_samples': num_total,
             'num_surrogate_valid_samples': num_surrogate_valid_base,
@@ -363,6 +432,7 @@ def main(args):
     run_meta = {
         'dataset': args.dataset,
         'path': args.path,
+        'target_mode': args.target_mode,
         'k_eval': args.k_eval,
         'candidate_k': args.candidate_k,
         'delta_list': delta_list,
@@ -370,6 +440,8 @@ def main(args):
         'btype_list': btype_list,
         'alpha': args.alpha,
         'beta': args.beta,
+        'pseudo_pool_k': args.pseudo_pool_k,
+        'pseudo_top_m': args.pseudo_top_m,
         'rtype_keywords': rtype_keywords,
         'top_ratio': args.top_ratio,
         'num_samples_total': num_samples,
@@ -381,6 +453,7 @@ def main(args):
 
     rec_json = {
         'dataset': args.dataset,
+        'target_mode': args.target_mode,
         'k_eval': args.k_eval,
         'top_ratio': args.top_ratio,
         'recommended_ranges': {
@@ -396,8 +469,9 @@ def main(args):
     meta_json_path = os.path.join(args.out_dir, 'run_meta.json')
 
     fields = [
-        'dataset', 'k_eval', 'candidate_k', 'delta', 'p_near', 'b_type',
-        'alpha', 'beta', 'num_samples', 'num_valid_samples',
+        'dataset', 'target_mode', 'k_eval', 'candidate_k', 'delta', 'p_near', 'b_type',
+        'alpha', 'beta', 'pseudo_pool_k', 'pseudo_top_m',
+        'num_samples', 'num_valid_samples',
         'num_surrogate_valid_samples', 'num_rankable_samples',
         'num_aer_effective_samples', 'num_pc_effective_samples',
         'aer_at_k', 'path_coverage_at_k', 'score'
@@ -438,6 +512,13 @@ if __name__ == '__main__':
                         help='Top-K used for proxy retrieval metrics (AER and Path Coverage).')
     parser.add_argument('--candidate_k', type=int, default=500,
                         help='Use at most top candidate_k scored triples per question.')
+    parser.add_argument('--target_mode', type=str, default='gold',
+                        choices=['gold', 'pseudo', 'topic_only'],
+                        help='How to build surrogate targets for re-ranking signals.')
+    parser.add_argument('--pseudo_pool_k', type=int, default=100,
+                        help='Pseudo mode only: mine pseudo targets from top pseudo_pool_k triples.')
+    parser.add_argument('--pseudo_top_m', type=int, default=3,
+                        help='Pseudo mode only: keep top pseudo_top_m entities.')
     parser.add_argument('--delta_list', type=str, default='0,1,2,3')
     parser.add_argument('--pnear_list', type=str, default='50,100,200,300,500')
     parser.add_argument('--btype_list', type=str, default='0,1,2,3,5')
