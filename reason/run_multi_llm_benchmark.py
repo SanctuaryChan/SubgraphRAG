@@ -64,7 +64,22 @@ def get_model_runtime_config(model_cfg: dict, defaults: dict, args):
     return int(tp), int(max_seq)
 
 
-def build_cmd(main_py: Path, args, model_cfg: dict, tp: int, max_seq: int):
+def get_model_backend_config(model_cfg: dict, defaults: dict):
+    backend = model_cfg.get("backend", defaults.get("backend", "auto"))
+    api_base = model_cfg.get("api_base", defaults.get("api_base"))
+    api_key_env = model_cfg.get("api_key_env", defaults.get("api_key_env", "OPENAI_API_KEY"))
+    request_model_name = model_cfg.get("request_model_name", defaults.get("request_model_name", model_cfg["model_name"]))
+    if backend == "openai_compatible" and not api_base:
+        raise ValueError(f"Model {model_cfg['alias']} uses backend=openai_compatible but api_base is not configured")
+    return {
+        "backend": backend,
+        "api_base": api_base,
+        "api_key_env": api_key_env,
+        "request_model_name": request_model_name,
+    }
+
+
+def build_cmd(main_py: Path, args, model_cfg: dict, tp: int, max_seq: int, backend_cfg: dict):
     cmd = [
         args.python_bin,
         str(main_py),
@@ -74,10 +89,16 @@ def build_cmd(main_py: Path, args, model_cfg: dict, tp: int, max_seq: int):
         args.prompt_mode,
         "--llm_mode",
         args.llm_mode,
+        "--llm_backend",
+        backend_cfg["backend"],
         "-m",
         model_cfg["model_name"],
         "--model_alias",
         model_cfg["alias"],
+        "--request_model_name",
+        backend_cfg["request_model_name"],
+        "--api_key_env",
+        backend_cfg["api_key_env"],
         "--split",
         args.split,
         "--tensor_parallel_size",
@@ -95,6 +116,8 @@ def build_cmd(main_py: Path, args, model_cfg: dict, tp: int, max_seq: int):
         "--thres",
         str(args.thres),
     ]
+    if backend_cfg["api_base"] is not None:
+        cmd.extend(["--api_base", backend_cfg["api_base"]])
     if args.score_dict_path is not None:
         cmd.extend(["-p", args.score_dict_path])
     if args.disable_wandb:
@@ -116,6 +139,9 @@ def summary_to_row(summary, status, error, metrics_summary_path):
         "dataset_name": summary.get("dataset_name"),
         "model_alias": summary.get("model_alias"),
         "model_name": summary.get("model_name"),
+        "request_model_name": summary.get("request_model_name"),
+        "llm_backend": summary.get("llm_backend"),
+        "api_base": summary.get("api_base"),
         "tensor_parallel_size": summary.get("tensor_parallel_size"),
         "max_seq_len_to_capture": summary.get("max_seq_len_to_capture"),
         "prompt_mode": summary.get("prompt_mode"),
@@ -141,11 +167,14 @@ def summary_to_row(summary, status, error, metrics_summary_path):
     }
 
 
-def failure_row(args, model_cfg, tp, max_seq, status, error, metrics_summary_path):
+def failure_row(args, model_cfg, backend_cfg, tp, max_seq, status, error, metrics_summary_path):
     return {
         "dataset_name": args.dataset_name,
         "model_alias": model_cfg["alias"],
         "model_name": model_cfg["model_name"],
+        "request_model_name": backend_cfg["request_model_name"],
+        "llm_backend": backend_cfg["backend"],
+        "api_base": backend_cfg["api_base"],
         "tensor_parallel_size": tp,
         "max_seq_len_to_capture": max_seq,
         "prompt_mode": args.prompt_mode,
@@ -177,6 +206,9 @@ def write_leaderboard(rows, out_csv_path: Path):
         "dataset_name",
         "model_alias",
         "model_name",
+        "request_model_name",
+        "llm_backend",
+        "api_base",
         "tensor_parallel_size",
         "max_seq_len_to_capture",
         "prompt_mode",
@@ -254,12 +286,13 @@ def main():
         alias = model_cfg["alias"]
         alias_tag = sanitize_name(alias)
         tp, max_seq = get_model_runtime_config(model_cfg, defaults, args)
+        backend_cfg = get_model_backend_config(model_cfg, defaults)
         metrics_summary_path = output_root / alias_tag / "metrics_summary.json"
-        cmd = build_cmd(main_py, args, model_cfg, tp, max_seq)
+        cmd = build_cmd(main_py, args, model_cfg, tp, max_seq, backend_cfg)
         cmd_str = " ".join(shlex.quote(part) for part in cmd)
 
         print("=" * 80)
-        print(f"[{idx}/{len(models)}] alias={alias} tp={tp} max_seq={max_seq}")
+        print(f"[{idx}/{len(models)}] alias={alias} backend={backend_cfg['backend']} tp={tp} max_seq={max_seq}")
         print(f"CMD: {cmd_str}")
 
         if args.skip_existing and metrics_summary_path.exists():
@@ -270,14 +303,14 @@ def main():
             continue
 
         if args.dry_run:
-            leaderboard_rows.append(failure_row(args, model_cfg, tp, max_seq, status="dry_run", error="", metrics_summary_path=metrics_summary_path))
+            leaderboard_rows.append(failure_row(args, model_cfg, backend_cfg, tp, max_seq, status="dry_run", error="", metrics_summary_path=metrics_summary_path))
             continue
 
         proc = subprocess.run(cmd, cwd=str(script_dir))
         if proc.returncode != 0:
             err_msg = f"main.py exited with code {proc.returncode}"
             print(f"ERROR: {err_msg}")
-            leaderboard_rows.append(failure_row(args, model_cfg, tp, max_seq, status="failed", error=err_msg, metrics_summary_path=metrics_summary_path))
+            leaderboard_rows.append(failure_row(args, model_cfg, backend_cfg, tp, max_seq, status="failed", error=err_msg, metrics_summary_path=metrics_summary_path))
             if args.fail_fast:
                 break
             continue
@@ -285,7 +318,7 @@ def main():
         if not metrics_summary_path.exists():
             err_msg = f"Missing metrics summary: {metrics_summary_path}"
             print(f"ERROR: {err_msg}")
-            leaderboard_rows.append(failure_row(args, model_cfg, tp, max_seq, status="missing_summary", error=err_msg, metrics_summary_path=metrics_summary_path))
+            leaderboard_rows.append(failure_row(args, model_cfg, backend_cfg, tp, max_seq, status="missing_summary", error=err_msg, metrics_summary_path=metrics_summary_path))
             if args.fail_fast:
                 break
             continue

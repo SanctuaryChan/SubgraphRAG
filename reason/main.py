@@ -149,8 +149,12 @@ def main():
     parser.add_argument("--prompt_mode", type=str, default="scored_100", help="Prompt mode")
     parser.add_argument("-p", "--score_dict_path", type=str)
     parser.add_argument("--llm_mode", type=str, default="sys_icl_dc", help="LLM mode")
+    parser.add_argument("--llm_backend", type=str, default="auto", help="LLM backend: auto, local_vllm, openai, or openai_compatible")
     parser.add_argument("-m", "--model_name", type=str, default="meta-llama/Meta-Llama-3.1-8B-Instruct", help="Model name")
     parser.add_argument("--model_alias", type=str, default=None, help="Optional alias used for output folder and run naming")
+    parser.add_argument("--request_model_name", type=str, default=None, help="Model name sent to OpenAI-compatible servers")
+    parser.add_argument("--api_base", type=str, default=None, help="OpenAI-compatible API base, e.g. http://127.0.0.1:8000/v1")
+    parser.add_argument("--api_key_env", type=str, default="OPENAI_API_KEY", help="Environment variable containing the API key")
     # parser.add_argument("--model_name", type=str, default="gpt-4o", help="Model name")
     parser.add_argument("--split", type=str, default="test", help="Split")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size")
@@ -166,7 +170,11 @@ def main():
     dataset_name = args.dataset_name
     prompt_mode = args.prompt_mode
     llm_mode = args.llm_mode
+    llm_backend = args.llm_backend
     model_name = args.model_name
+    request_model_name = args.request_model_name
+    api_base = args.api_base
+    api_key_env = args.api_key_env
     split = args.split
     model_alias = args.model_alias
     tensor_parallel_size = args.tensor_parallel_size
@@ -196,7 +204,19 @@ def main():
     raw_pred_folder_path.mkdir(parents=True, exist_ok=True)
     raw_pred_file_path = raw_pred_folder_path / f"{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}-predictions-resume.jsonl"
 
-    llm = llm_init(model_name, tensor_parallel_size, max_seq_len_to_capture, max_tokens, seed, temperature, frequency_penalty)
+    llm, resolved_backend = llm_init(
+        model_name,
+        tensor_parallel_size,
+        max_seq_len_to_capture,
+        max_tokens,
+        seed,
+        temperature,
+        frequency_penalty,
+        llm_backend=llm_backend,
+        api_base=api_base,
+        api_key_env=api_key_env,
+        request_model_name=request_model_name,
+    )
     data = get_data(dataset_name, pred_file_path, score_dict_path, split, prompt_mode)
     sys_prompt, cot_prompt = get_defined_prompts(prompt_mode, model_name, llm_mode)
     print("Generating prompts...")
@@ -206,7 +226,7 @@ def main():
     start_idx = len(load_checkpoint(raw_pred_file_path))
     with open(raw_pred_file_path, "a") as pred_file:
         for idx, each_qa in enumerate(tqdm(data[start_idx:], initial=start_idx, total=len(data))):
-            res = llm_inf_all(llm, each_qa, llm_mode, model_name)
+            res = llm_inf_all(llm, each_qa, llm_mode, resolved_backend)
 
             del each_qa["graph"], each_qa["good_paths_rog"], each_qa["good_triplets_rog"], each_qa["scored_triplets"]
 
@@ -224,9 +244,13 @@ def main():
         "split": split,
         "prompt_mode": prompt_mode,
         "llm_mode": llm_mode,
+        "llm_backend": resolved_backend,
         "model_name": model_name,
+        "request_model_name": request_model_name or model_name,
         "model_alias": model_alias,
         "model_tag": model_tag,
+        "api_base": api_base,
+        "api_key_env": api_key_env,
         "tensor_parallel_size": tensor_parallel_size,
         "max_seq_len_to_capture": max_seq_len_to_capture,
         "max_tokens": max_tokens,
