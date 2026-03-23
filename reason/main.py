@@ -3,6 +3,7 @@ import json
 import wandb
 import random
 import argparse
+import re
 from tqdm import tqdm
 from pathlib import Path
 
@@ -85,6 +86,35 @@ def eval_all(pred_file_path, run, subset, split=None, eval_hops=-1):
     run.log({f"results{postfix}/hit": hit})
     print("=" * 50)
     print("=" * 50)
+    corrected_metrics = {
+        "hit@1": hit1,
+        "macro_f1": f1,
+        "macro_precision": prec,
+        "macro_recall": recall,
+        "exact_match": em,
+        "totally_wrong": tw,
+        "micro_f1": mi_f1,
+        "micro_precision": mi_prec,
+        "micro_recall": mi_recall,
+        "total_cnt": total_cnt,
+        "no_ans_cnt": no_ans_cnt,
+        "no_ans_ratio": no_ans_ratio,
+        "hal_score": hal_score,
+        "stats": stats,
+    }
+    original_metrics = {"hit": hit}
+    return {"corrected": corrected_metrics, "original": original_metrics}
+
+
+def sanitize_name(name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
+    return sanitized or "model"
+
+
+def get_model_tag(model_name: str, model_alias: str = None) -> str:
+    if model_alias:
+        return sanitize_name(model_alias)
+    return sanitize_name(model_name.split("/")[-1])
 
 
 def main():
@@ -94,6 +124,7 @@ def main():
     parser.add_argument("-p", "--score_dict_path", type=str)
     parser.add_argument("--llm_mode", type=str, default="sys_icl_dc", help="LLM mode")
     parser.add_argument("-m", "--model_name", type=str, default="meta-llama/Meta-Llama-3.1-8B-Instruct", help="Model name")
+    parser.add_argument("--model_alias", type=str, default=None, help="Optional alias used for output folder and run naming")
     # parser.add_argument("--model_name", type=str, default="gpt-4o", help="Model name")
     parser.add_argument("--split", type=str, default="test", help="Split")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size")
@@ -110,6 +141,7 @@ def main():
     llm_mode = args.llm_mode
     model_name = args.model_name
     split = args.split
+    model_alias = args.model_alias
     tensor_parallel_size = args.tensor_parallel_size
     max_seq_len_to_capture = args.max_seq_len_to_capture
     max_tokens = args.max_tokens
@@ -119,7 +151,8 @@ def main():
     thres = args.thres
 
     pred_file_path = f"./results/KGQA/{dataset_name}/RoG/{split}/results_gen_rule_path_RoG-{dataset_name}_RoG_{split}_predictions_3_False_jsonl/predictions.jsonl"
-    run_name = f"{model_name}-{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}"
+    model_tag = get_model_tag(model_name, model_alias)
+    run_name = sanitize_name(f"{model_tag}-{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}")
     run = wandb.init(project=f"RAG-{dataset_name}", name=run_name, config=args)
 
     if args.score_dict_path is None:
@@ -132,7 +165,7 @@ def main():
     else:
         score_dict_path = args.score_dict_path
 
-    raw_pred_folder_path = Path(f"./results/KGQA/{dataset_name}/SubgraphRAG/{args.model_name.split('/')[-1]}")
+    raw_pred_folder_path = Path(f"./results/KGQA/{dataset_name}/SubgraphRAG/{model_tag}")
     raw_pred_folder_path.mkdir(parents=True, exist_ok=True)
     raw_pred_file_path = raw_pred_folder_path / f"{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}-predictions-resume.jsonl"
 
@@ -156,8 +189,32 @@ def main():
     # If the processing completes, rename the files to remove the "resume" flag
     final_pred_file_path = raw_pred_file_path.with_name(raw_pred_file_path.stem.replace("-resume", "") + raw_pred_file_path.suffix)
     os.rename(raw_pred_file_path, final_pred_file_path)
-    eval_all(final_pred_file_path, run, subset=True)
-    eval_all(final_pred_file_path, run, subset=False)
+    subset_metrics = eval_all(final_pred_file_path, run, subset=True)
+    all_metrics = eval_all(final_pred_file_path, run, subset=False)
+
+    summary_payload = {
+        "dataset_name": dataset_name,
+        "split": split,
+        "prompt_mode": prompt_mode,
+        "llm_mode": llm_mode,
+        "model_name": model_name,
+        "model_alias": model_alias,
+        "model_tag": model_tag,
+        "tensor_parallel_size": tensor_parallel_size,
+        "max_seq_len_to_capture": max_seq_len_to_capture,
+        "max_tokens": max_tokens,
+        "seed": seed,
+        "temperature": temperature,
+        "frequency_penalty": frequency_penalty,
+        "thres": thres,
+        "prediction_file": str(final_pred_file_path),
+        "subset_metrics": subset_metrics,
+        "all_metrics": all_metrics,
+    }
+    summary_path = raw_pred_folder_path / "metrics_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(summary_payload, f, indent=2)
+    print(f"Saved metrics summary: {summary_path}")
 
 
 if __name__ == "__main__":

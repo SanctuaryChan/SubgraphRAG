@@ -47,3 +47,36 @@ where `P` is the path to the retrieval results obtained from retrieval inference
 ### Config
 
 Our used config for each dataset can be found in `./config`.
+
+### Multi-LLM Benchmark (Local Models)
+
+To benchmark multiple local models in one run, edit `configs/model_zoo_local.yaml` first.
+
+Then run:
+
+```bash
+python run_multi_llm_benchmark.py \
+  -d cwq \
+  --model_zoo configs/model_zoo_local.yaml \
+  --prompt_mode scored_100 \
+  --llm_mode sys_icl_dc_repro \
+  --split test \
+  --max_tokens 4000 \
+  --temperature 0 \
+  --frequency_penalty 0.16 \
+  --thres 0.0 \
+  --skip_existing
+```
+
+Run selected models only:
+
+```bash
+python run_multi_llm_benchmark.py \
+  -d webqsp \
+  --model_zoo configs/model_zoo_local.yaml \
+  --models llama31_8b,qwen35_4b
+```
+
+The script writes a merged table to:
+
+`results/KGQA/<dataset>/SubgraphRAG/leaderboard.csv`
