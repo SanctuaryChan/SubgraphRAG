@@ -1,11 +1,15 @@
 import os
 import json
-import wandb
 import random
 import argparse
 import re
 from tqdm import tqdm
 from pathlib import Path
+
+try:
+    import wandb
+except Exception:
+    wandb = None
 
 from preprocess.prepare_data import get_data
 from preprocess.prepare_prompts import get_prompts_for_data
@@ -13,6 +17,28 @@ from llm_utils import llm_init, llm_inf_all
 
 from metrics.evaluate_results_corrected import eval_results as eval_results_corrected
 from metrics.evaluate_results import eval_results as eval_results_original
+
+
+class DummyRun:
+    def log(self, *_args, **_kwargs):
+        return None
+
+    def finish(self):
+        return None
+
+
+def init_run(args, dataset_name, run_name):
+    if args.disable_wandb:
+        print("W&B is disabled by flag: --disable_wandb")
+        return DummyRun()
+    if wandb is None:
+        print("W&B import failed. Falling back to disabled logging.")
+        return DummyRun()
+    try:
+        return wandb.init(project=f"RAG-{dataset_name}", name=run_name, config=args)
+    except Exception as e:
+        print(f"W&B init failed ({type(e).__name__}: {e}). Falling back to disabled logging.")
+        return DummyRun()
 
 
 def get_defined_prompts(prompt_mode, model_name, llm_mode):
@@ -134,6 +160,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=0, help="Temperature")
     parser.add_argument("--frequency_penalty", type=float, default=0.16, help="Frequency penalty")
     parser.add_argument("--thres", type=float, default=0.0, help="Threshold")
+    parser.add_argument("--disable_wandb", action="store_true", help="Disable wandb logging")
 
     args = parser.parse_args()
     dataset_name = args.dataset_name
@@ -153,7 +180,7 @@ def main():
     pred_file_path = f"./results/KGQA/{dataset_name}/RoG/{split}/results_gen_rule_path_RoG-{dataset_name}_RoG_{split}_predictions_3_False_jsonl/predictions.jsonl"
     model_tag = get_model_tag(model_name, model_alias)
     run_name = sanitize_name(f"{model_tag}-{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}")
-    run = wandb.init(project=f"RAG-{dataset_name}", name=run_name, config=args)
+    run = init_run(args, dataset_name, run_name)
 
     if args.score_dict_path is None:
         if dataset_name == "webqsp":
@@ -215,6 +242,7 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(summary_payload, f, indent=2)
     print(f"Saved metrics summary: {summary_path}")
+    run.finish()
 
 
 if __name__ == "__main__":

@@ -97,6 +97,8 @@ def build_cmd(main_py: Path, args, model_cfg: dict, tp: int, max_seq: int):
     ]
     if args.score_dict_path is not None:
         cmd.extend(["-p", args.score_dict_path])
+    if args.disable_wandb:
+        cmd.append("--disable_wandb")
     return cmd
 
 
@@ -224,6 +226,7 @@ def main():
     parser.add_argument("--default_max_seq_len_to_capture", type=int, default=None, help="Override max_seq_len_to_capture for all models")
     parser.add_argument("--python_bin", type=str, default=sys.executable, help="Python binary used to launch main.py")
     parser.add_argument("--skip_existing", action="store_true", help="Skip model if metrics_summary.json already exists")
+    parser.add_argument("--disable_wandb", action="store_true", help="Disable wandb logging in child runs")
     parser.add_argument("--dry_run", action="store_true", help="Only print commands, do not run")
     parser.add_argument("--fail_fast", action="store_true", help="Stop if one model fails")
 

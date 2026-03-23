@@ -65,6 +65,7 @@ python run_multi_llm_benchmark.py \
   --temperature 0 \
   --frequency_penalty 0.16 \
   --thres 0.0 \
+  --disable_wandb \
   --skip_existing
 ```
 
