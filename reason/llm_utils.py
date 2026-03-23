@@ -10,14 +10,47 @@ from functools import partial
 from prompts import icl_user_prompt, icl_ass_prompt
 
 
-def _compute_rope_factor(cfg: dict, rope_scaling: dict) -> float:
-    max_pos = cfg.get("max_position_embeddings")
-    ori_max_pos = cfg.get("original_max_position_embeddings")
+def _compute_rope_factor(context_cfg: dict, rope_scaling: dict, root_cfg: dict) -> float:
+    max_pos = context_cfg.get("max_position_embeddings")
+    if not isinstance(max_pos, int):
+        max_pos = root_cfg.get("max_position_embeddings")
+
+    ori_max_pos = rope_scaling.get("original_max_position_embeddings")
+    if not isinstance(ori_max_pos, int):
+        ori_max_pos = context_cfg.get("original_max_position_embeddings")
+    if not isinstance(ori_max_pos, int):
+        ori_max_pos = root_cfg.get("original_max_position_embeddings")
+
     if isinstance(max_pos, int) and isinstance(ori_max_pos, int) and ori_max_pos > 0:
         return max(1.0, float(max_pos) / float(ori_max_pos))
     # Conservative fallback. It only satisfies old vLLM validation when model
     # config misses "factor"; actual scaling behavior remains effectively unchanged.
     return 1.0
+
+
+def _has_valid_rope_factor(rope_scaling: dict) -> bool:
+    factor = rope_scaling.get("factor")
+    return isinstance(factor, (int, float)) and factor > 0
+
+
+def _patch_rope_scaling_in_cfg(node, root_cfg: dict, path: str = "config"):
+    patched_paths = []
+
+    if isinstance(node, dict):
+        rope_scaling = node.get("rope_scaling")
+        if isinstance(rope_scaling, dict) and not _has_valid_rope_factor(rope_scaling):
+            patched_rope_scaling = dict(rope_scaling)
+            patched_rope_scaling["factor"] = _compute_rope_factor(node, patched_rope_scaling, root_cfg)
+            node["rope_scaling"] = patched_rope_scaling
+            patched_paths.append(f"{path}.rope_scaling")
+
+        for key, value in node.items():
+            patched_paths.extend(_patch_rope_scaling_in_cfg(value, root_cfg, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for idx, value in enumerate(node):
+            patched_paths.extend(_patch_rope_scaling_in_cfg(value, root_cfg, f"{path}[{idx}]"))
+
+    return patched_paths
 
 
 def _link_or_copy(src: Path, dst: Path):
@@ -50,15 +83,13 @@ def _prepare_local_model_path_for_vllm(model_name: str) -> str:
     except Exception:
         return model_name
 
-    rope_scaling = cfg.get("rope_scaling")
-    if not isinstance(rope_scaling, dict) or "factor" in rope_scaling:
+    patched_paths = _patch_rope_scaling_in_cfg(cfg, cfg)
+    if not patched_paths:
         return model_name
 
-    rope_scaling = dict(rope_scaling)
-    rope_scaling["factor"] = _compute_rope_factor(cfg, rope_scaling)
-    cfg["rope_scaling"] = rope_scaling
-
-    hash_key = hashlib.md5(f"{model_path.resolve()}::{json.dumps(rope_scaling, sort_keys=True)}".encode("utf-8")).hexdigest()[:12]
+    hash_key = hashlib.md5(
+        f"{model_path.resolve()}::{json.dumps(cfg, sort_keys=True)}".encode("utf-8")
+    ).hexdigest()[:12]
     patched_root = Path("/tmp/subgraphrag_model_patches")
     patched_dir = patched_root / f"{model_path.name}_{hash_key}"
     patched_cfg_path = patched_dir / "config.json"
@@ -71,9 +102,15 @@ def _prepare_local_model_path_for_vllm(model_name: str) -> str:
             _link_or_copy(item, patched_dir / item.name)
         with open(patched_cfg_path, "w") as f:
             json.dump(cfg, f, indent=2)
-        print(f"[llm_utils] Patched rope_scaling for vLLM compatibility: {patched_cfg_path}")
+        print(
+            f"[llm_utils] Patched rope_scaling for vLLM compatibility at {', '.join(patched_paths)}: {patched_cfg_path}",
+            flush=True,
+        )
     else:
-        print(f"[llm_utils] Using existing patched model config: {patched_cfg_path}")
+        print(
+            f"[llm_utils] Using existing patched model config for {', '.join(patched_paths)}: {patched_cfg_path}",
+            flush=True,
+        )
 
     return str(patched_dir)
 
