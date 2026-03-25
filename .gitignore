@@ -3,3 +3,4 @@ wandb
 *.pth
 retrieve/data_files
 gnn_readonly
+.idea
