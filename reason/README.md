@@ -12,7 +12,7 @@
 conda create -n reasoner python=3.10.14 -y
 conda activate reasoner
 pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
-pip install vllm==0.5.5 openai==1.50.2 wandb
+pip install vllm==0.5.5 openai==1.50.2 wandb ollama pyyaml
 ```
 
 ## Reasoning (Inference)
@@ -35,6 +35,20 @@ python main.py -d webqsp --prompt_mode scored_100
 python main.py -d cwq --prompt_mode scored_100
 ```
 
+To run with a local Ollama model, specify `--llm_backend ollama` and an Ollama model tag:
+
+```bash
+python main.py \
+  -d cwq \
+  --prompt_mode scored_100 \
+  --llm_mode sys_icl_dc \
+  --llm_backend ollama \
+  -m qwen3.5:4b \
+  --model_alias qwen35_4b \
+  --ollama_host http://127.0.0.1:11434 \
+  --disable_wandb
+```
+
 ### Using Alternative Retrieval Results
 
 To use alternative retrieval results,
@@ -47,3 +61,36 @@ where `P` is the path to the retrieval results obtained from retrieval inference
 ### Config
 
 Our used config for each dataset can be found in `./config`.
+
+### Multi-LLM Benchmark
+
+To benchmark multiple models in one run, edit `configs/model_zoo_local.yaml` first.
+
+Then run:
+
+```bash
+python run_multi_llm_benchmark.py \
+  -d cwq \
+  --model_zoo configs/model_zoo_local.yaml \
+  --prompt_mode scored_100 \
+  --llm_mode sys_icl_dc \
+  --split test \
+  --max_tokens 1024 \
+  --temperature 0 \
+  --frequency_penalty 0.16 \
+  --thres 0.0 \
+  --disable_wandb
+```
+
+Run selected models only:
+
+```bash
+python run_multi_llm_benchmark.py \
+  -d cwq \
+  --model_zoo configs/model_zoo_local.yaml \
+  --models qwen35_4b,qwen35_2b
+```
+
+The script writes a merged table to:
+
+`results/KGQA/<dataset>/SubgraphRAG/leaderboard.csv`
