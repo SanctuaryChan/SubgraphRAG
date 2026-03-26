@@ -1,5 +1,7 @@
 import time
 from functools import partial
+from pathlib import Path
+import re
 
 import openai
 from openai import OpenAI
@@ -21,10 +23,84 @@ except Exception as e:
     OllamaResponseError = Exception
     _OLLAMA_IMPORT_ERROR = e
 
+try:
+    from transformers import AutoTokenizer as TransformersAutoTokenizer
+    _TRANSFORMERS_IMPORT_ERROR = None
+except Exception as e:
+    TransformersAutoTokenizer = None
+    _TRANSFORMERS_IMPORT_ERROR = e
+
+try:
+    from modelscope import AutoTokenizer as ModelScopeAutoTokenizer
+    _MODELSCOPE_IMPORT_ERROR = None
+except Exception as e:
+    ModelScopeAutoTokenizer = None
+    _MODELSCOPE_IMPORT_ERROR = e
+
 from prompts import icl_user_prompt, icl_ass_prompt
 
 
 VALID_LLM_BACKENDS = {"auto", "local_vllm", "openai", "ollama"}
+
+
+def resolve_model_ref(model_name: str, local_model_path: str = None):
+    if local_model_path:
+        path = Path(local_model_path).expanduser()
+        if path.exists():
+            return str(path.resolve()), "local_path"
+
+    path = Path(model_name).expanduser()
+    if path.exists():
+        return str(path.resolve()), "local_path"
+    return model_name, "model_ref"
+
+
+def is_qwen3_model(model_ref: str) -> bool:
+    lowered = (model_ref or "").lower()
+    return "qwen3" in lowered and "qwen3.5" not in lowered and "qwen35" not in lowered
+
+
+def load_chat_tokenizer(model_ref: str):
+    errors = []
+    loaders = [
+        ("transformers", TransformersAutoTokenizer, _TRANSFORMERS_IMPORT_ERROR),
+        ("modelscope", ModelScopeAutoTokenizer, _MODELSCOPE_IMPORT_ERROR),
+    ]
+
+    for loader_name, loader, import_error in loaders:
+        if loader is None:
+            if import_error is not None:
+                errors.append(f"{loader_name} import failed: {type(import_error).__name__}: {import_error}")
+            continue
+        try:
+            return loader.from_pretrained(model_ref, trust_remote_code=True)
+        except Exception as e:
+            errors.append(f"{loader_name} load failed: {type(e).__name__}: {e}")
+
+    raise RuntimeError(
+        "Unable to load a tokenizer for the requested Qwen3 model. "
+        f"Attempted model_ref={model_ref!r}. Errors: {' | '.join(errors)}"
+    )
+
+
+def sanitize_model_output(output_text: str) -> str:
+    if not output_text:
+        return ""
+
+    cleaned = output_text.strip()
+    lowered = cleaned.lower()
+    if "</think>" in lowered:
+        match = list(re.finditer(r"(?i)</think>", cleaned))
+        if match:
+            cleaned = cleaned[match[-1].end():]
+    elif "<think>" in lowered:
+        ans_match = re.search(r"(?i)\bans\s*:", cleaned)
+        if ans_match is not None:
+            cleaned = cleaned[ans_match.start():]
+
+    cleaned = re.sub(r"(?is)<think>.*?</think>", "", cleaned)
+    cleaned = re.sub(r"(?i)</?think>", "", cleaned)
+    return cleaned.strip()
 
 
 def normalize_llm_backend(llm_backend: str, model_name: str) -> str:
@@ -46,8 +122,16 @@ def llm_init(
     frequency_penalty=0,
     llm_backend="auto",
     ollama_host="http://127.0.0.1:11434",
+    enable_thinking=False,
+    local_model_path=None,
 ):
     resolved_backend = normalize_llm_backend(llm_backend, model_name)
+    resolved_model_ref, resolved_model_source = resolve_model_ref(model_name, local_model_path)
+    runtime_info = {
+        "resolved_model_ref": resolved_model_ref,
+        "resolved_model_source": resolved_model_source,
+        "enable_thinking": bool(enable_thinking),
+    }
 
     if resolved_backend == "local_vllm":
         if LLM is None or SamplingParams is None:
@@ -56,17 +140,39 @@ def llm_init(
                 "Install vllm or switch to llm_backend=ollama."
             ) from _VLLM_IMPORT_ERROR
         client = LLM(
-            model=model_name,
+            model=resolved_model_ref,
             tensor_parallel_size=tensor_parallel_size,
             max_seq_len_to_capture=max_seq_len_to_capture,
+            trust_remote_code=True,
         )
         sampling_params = SamplingParams(
             temperature=temperature,
             max_tokens=max_tokens,
             frequency_penalty=frequency_penalty,
         )
-        llm = partial(client.chat, sampling_params=sampling_params, use_tqdm=False)
-        return llm, resolved_backend
+        if is_qwen3_model(resolved_model_ref):
+            tokenizer = load_chat_tokenizer(resolved_model_ref)
+            runtime_info["uses_qwen3_chat_template"] = True
+
+            def llm(messages):
+                prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=bool(enable_thinking),
+                )
+                outputs = client.generate([prompt], sampling_params=sampling_params, use_tqdm=False)
+                return outputs[0].outputs[0].text
+
+            return llm, resolved_backend, runtime_info
+
+        runtime_info["uses_qwen3_chat_template"] = False
+
+        def llm(messages):
+            outputs = client.chat(messages=messages, sampling_params=sampling_params, use_tqdm=False)
+            return outputs[0].outputs[0].text
+
+        return llm, resolved_backend, runtime_info
 
     if resolved_backend == "ollama":
         if OllamaClient is None:
@@ -83,7 +189,13 @@ def llm_init(
             "frequency_penalty": frequency_penalty,
         }
         llm = partial(client.chat, model=model_name, options=options)
-        return llm, resolved_backend
+
+        def invoke_ollama(messages):
+            outputs = llm(messages=messages)
+            return outputs.message.content
+
+        runtime_info["uses_qwen3_chat_template"] = False
+        return invoke_ollama, resolved_backend, runtime_info
 
     client = OpenAI()
     llm = partial(
@@ -93,19 +205,20 @@ def llm_init(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return llm, resolved_backend
 
+    def invoke_openai(messages):
+        outputs = llm(messages=messages)
+        message = outputs.choices[0].message
+        return message.content or ""
 
-def get_outputs(outputs, llm_backend):
-    if llm_backend == "local_vllm":
-        return outputs[0].outputs[0].text
-    if llm_backend == "ollama":
-        return outputs.message.content
-    return outputs.choices[0].message.content
+    runtime_info["uses_qwen3_chat_template"] = False
+    return invoke_openai, resolved_backend, runtime_info
 
 
 def llm_inf(llm, prompts, mode, llm_backend):
     res = []
+    raw_res = []
+    conversation = []
     if "sys" in mode:
         conversation = [{"role": "system", "content": prompts["sys_query"]}]
 
@@ -115,26 +228,34 @@ def llm_inf(llm, prompts, mode, llm_backend):
 
     if "sys" in mode:
         conversation.append({"role": "user", "content": prompts["user_query"]})
-        outputs = get_outputs(llm(messages=conversation), llm_backend)
+        raw_output = llm(messages=conversation)
+        outputs = sanitize_model_output(raw_output)
         res.append(outputs)
+        raw_res.append(raw_output)
 
     if "sys_cot" in mode:
         if "clear" in mode:
             conversation = []
         conversation.append({"role": "assistant", "content": outputs})
         conversation.append({"role": "user", "content": prompts["cot_query"]})
-        outputs = get_outputs(llm(messages=conversation), llm_backend)
+        raw_output = llm(messages=conversation)
+        outputs = sanitize_model_output(raw_output)
         res.append(outputs)
+        raw_res.append(raw_output)
     elif "dc" in mode:
         if "ans:" not in res[0].lower() or "ans: not available" in res[0].lower() or "ans: no information available" in res[0].lower():
             conversation.append({"role": "user", "content": prompts["cot_query"]})
-            outputs = get_outputs(llm(messages=conversation), llm_backend)
+            raw_output = llm(messages=conversation)
+            outputs = sanitize_model_output(raw_output)
             res[0] = outputs
+            raw_res[0] = raw_output
         res.append("")
+        raw_res.append("")
     else:
         res.append("")
+        raw_res.append("")
 
-    return res
+    return {"responses": res, "raw_responses": raw_res}
 
 
 def llm_inf_with_retry(llm, each_qa, llm_mode, llm_backend, max_retries):

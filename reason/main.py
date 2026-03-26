@@ -155,12 +155,14 @@ def main():
     parser.add_argument("--llm_mode", type=str, default="sys_icl_dc", help="LLM mode")
     parser.add_argument("--llm_backend", type=str, default="auto", help="LLM backend: auto, local_vllm, openai, or ollama")
     parser.add_argument("-m", "--model_name", type=str, default="meta-llama/Meta-Llama-3.1-8B-Instruct", help="Model name")
+    parser.add_argument("--local_model_path", type=str, default=None, help="Optional local model path used before model_name")
     parser.add_argument("--model_alias", type=str, default=None, help="Optional alias used for output folder and run naming")
     parser.add_argument("--ollama_host", type=str, default="http://127.0.0.1:11434", help="Ollama host URL")
     parser.add_argument("--split", type=str, default="test", help="Split")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size")
     parser.add_argument("--max_seq_len_to_capture", type=int, default=8192 * 2, help="Max sequence length to capture")
     parser.add_argument("--max_tokens", type=int, default=4000, help="Max tokens")
+    parser.add_argument("--enable_thinking", action="store_true", help="Enable Qwen3 thinking mode when supported")
     parser.add_argument("--seed", type=int, default=0, help="Seed")
     parser.add_argument("--temperature", type=float, default=0, help="Temperature")
     parser.add_argument("--frequency_penalty", type=float, default=0.16, help="Frequency penalty")
@@ -173,12 +175,14 @@ def main():
     llm_mode = args.llm_mode
     llm_backend = args.llm_backend
     model_name = args.model_name
+    local_model_path = args.local_model_path
     model_alias = args.model_alias
     ollama_host = args.ollama_host
     split = args.split
     tensor_parallel_size = args.tensor_parallel_size
     max_seq_len_to_capture = args.max_seq_len_to_capture
     max_tokens = args.max_tokens
+    enable_thinking = args.enable_thinking
     seed = args.seed
     temperature = args.temperature
     frequency_penalty = args.frequency_penalty
@@ -203,7 +207,7 @@ def main():
     raw_pred_folder_path.mkdir(parents=True, exist_ok=True)
     raw_pred_file_path = raw_pred_folder_path / f"{prompt_mode}-{llm_mode}-{frequency_penalty}-thres_{thres}-{split}-predictions-resume.jsonl"
 
-    llm, resolved_backend = llm_init(
+    llm, resolved_backend, llm_runtime_info = llm_init(
         model_name,
         tensor_parallel_size,
         max_seq_len_to_capture,
@@ -213,6 +217,8 @@ def main():
         frequency_penalty,
         llm_backend=llm_backend,
         ollama_host=ollama_host,
+        enable_thinking=enable_thinking,
+        local_model_path=local_model_path,
     )
     data = get_data(dataset_name, pred_file_path, score_dict_path, split, prompt_mode)
     sys_prompt, cot_prompt = get_defined_prompts(prompt_mode, model_name, llm_mode)
@@ -223,11 +229,14 @@ def main():
     start_idx = len(load_checkpoint(raw_pred_file_path))
     with open(raw_pred_file_path, "a") as pred_file:
         for idx, each_qa in enumerate(tqdm(data[start_idx:], initial=start_idx, total=len(data))):
-            res = llm_inf_all(llm, each_qa, llm_mode, resolved_backend)
+            result = llm_inf_all(llm, each_qa, llm_mode, resolved_backend)
+            responses = result["responses"]
+            raw_responses = result["raw_responses"]
 
             del each_qa["graph"], each_qa["good_paths_rog"], each_qa["good_triplets_rog"], each_qa["scored_triplets"]
 
-            each_qa["prediction"] = res[0]
+            each_qa["prediction"] = responses[0]
+            each_qa["raw_prediction"] = raw_responses[0]
             save_checkpoint(pred_file, each_qa)
 
     final_pred_file_path = raw_pred_file_path.with_name(raw_pred_file_path.stem.replace("-resume", "") + raw_pred_file_path.suffix)
@@ -242,12 +251,17 @@ def main():
         "llm_mode": llm_mode,
         "llm_backend": resolved_backend,
         "model_name": model_name,
+        "local_model_path": local_model_path,
         "model_alias": model_alias,
         "model_tag": model_tag,
+        "resolved_model_ref": llm_runtime_info["resolved_model_ref"],
+        "resolved_model_source": llm_runtime_info["resolved_model_source"],
         "ollama_host": ollama_host if resolved_backend == "ollama" else None,
         "tensor_parallel_size": tensor_parallel_size,
         "max_seq_len_to_capture": max_seq_len_to_capture,
         "max_tokens": max_tokens,
+        "enable_thinking": llm_runtime_info["enable_thinking"],
+        "uses_qwen3_chat_template": llm_runtime_info["uses_qwen3_chat_template"],
         "seed": seed,
         "temperature": temperature,
         "frequency_penalty": frequency_penalty,

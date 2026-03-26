@@ -58,15 +58,17 @@ def get_model_runtime_config(model_cfg: dict, defaults: dict, args):
     ollama_host = model_cfg.get("ollama_host", defaults.get("ollama_host", "http://127.0.0.1:11434"))
     tp = model_cfg.get("tensor_parallel_size", defaults.get("tensor_parallel_size", 1))
     max_seq = model_cfg.get("max_seq_len_to_capture", defaults.get("max_seq_len_to_capture", 16384))
+    enable_thinking = model_cfg.get("enable_thinking", defaults.get("enable_thinking", False))
+    local_model_path = model_cfg.get("local_model_path", defaults.get("local_model_path"))
 
     if args.default_tensor_parallel_size is not None:
         tp = args.default_tensor_parallel_size
     if args.default_max_seq_len_to_capture is not None:
         max_seq = args.default_max_seq_len_to_capture
-    return backend, ollama_host, int(tp), int(max_seq)
+    return backend, ollama_host, int(tp), int(max_seq), bool(enable_thinking), local_model_path
 
 
-def build_cmd(main_py: Path, args, model_cfg: dict, backend: str, ollama_host: str, tp: int, max_seq: int):
+def build_cmd(main_py: Path, args, model_cfg: dict, backend: str, ollama_host: str, tp: int, max_seq: int, enable_thinking: bool, local_model_path: str):
     cmd = [
         args.python_bin,
         str(main_py),
@@ -80,8 +82,6 @@ def build_cmd(main_py: Path, args, model_cfg: dict, backend: str, ollama_host: s
         backend,
         "-m",
         model_cfg["model_name"],
-        "--model_alias",
-        model_cfg["alias"],
         "--split",
         args.split,
         "--tensor_parallel_size",
@@ -99,6 +99,12 @@ def build_cmd(main_py: Path, args, model_cfg: dict, backend: str, ollama_host: s
         "--thres",
         str(args.thres),
     ]
+    if model_cfg.get("alias"):
+        cmd.extend(["--model_alias", model_cfg["alias"]])
+    if local_model_path:
+        cmd.extend(["--local_model_path", local_model_path])
+    if enable_thinking:
+        cmd.append("--enable_thinking")
     if backend == "ollama":
         cmd.extend(["--ollama_host", ollama_host])
     if args.score_dict_path is not None:
@@ -122,12 +128,16 @@ def summary_to_row(summary, status, error, metrics_summary_path):
         "dataset_name": summary.get("dataset_name"),
         "model_alias": summary.get("model_alias"),
         "model_name": summary.get("model_name"),
+        "local_model_path": summary.get("local_model_path"),
+        "resolved_model_ref": summary.get("resolved_model_ref"),
+        "resolved_model_source": summary.get("resolved_model_source"),
         "llm_backend": summary.get("llm_backend"),
         "ollama_host": summary.get("ollama_host"),
         "tensor_parallel_size": summary.get("tensor_parallel_size"),
         "max_seq_len_to_capture": summary.get("max_seq_len_to_capture"),
         "prompt_mode": summary.get("prompt_mode"),
         "llm_mode": summary.get("llm_mode"),
+        "enable_thinking": summary.get("enable_thinking"),
         "split": summary.get("split"),
         "max_tokens": summary.get("max_tokens"),
         "temperature": summary.get("temperature"),
@@ -149,17 +159,21 @@ def summary_to_row(summary, status, error, metrics_summary_path):
     }
 
 
-def failure_row(args, model_cfg, backend: str, ollama_host: str, tp: int, max_seq: int, status, error, metrics_summary_path):
+def failure_row(args, model_cfg, backend: str, ollama_host: str, tp: int, max_seq: int, enable_thinking: bool, local_model_path: str, status, error, metrics_summary_path):
     return {
         "dataset_name": args.dataset_name,
         "model_alias": model_cfg["alias"],
         "model_name": model_cfg["model_name"],
+        "local_model_path": local_model_path,
+        "resolved_model_ref": None,
+        "resolved_model_source": None,
         "llm_backend": backend,
         "ollama_host": ollama_host if backend == "ollama" else None,
         "tensor_parallel_size": tp,
         "max_seq_len_to_capture": max_seq,
         "prompt_mode": args.prompt_mode,
         "llm_mode": args.llm_mode,
+        "enable_thinking": enable_thinking,
         "split": args.split,
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
@@ -187,12 +201,16 @@ def write_leaderboard(rows, out_csv_path: Path):
         "dataset_name",
         "model_alias",
         "model_name",
+        "local_model_path",
+        "resolved_model_ref",
+        "resolved_model_source",
         "llm_backend",
         "ollama_host",
         "tensor_parallel_size",
         "max_seq_len_to_capture",
         "prompt_mode",
         "llm_mode",
+        "enable_thinking",
         "split",
         "max_tokens",
         "temperature",
@@ -265,13 +283,13 @@ def main():
     for idx, model_cfg in enumerate(models, start=1):
         alias = model_cfg["alias"]
         alias_tag = sanitize_name(alias)
-        backend, ollama_host, tp, max_seq = get_model_runtime_config(model_cfg, defaults, args)
+        backend, ollama_host, tp, max_seq, enable_thinking, local_model_path = get_model_runtime_config(model_cfg, defaults, args)
         metrics_summary_path = output_root / alias_tag / "metrics_summary.json"
-        cmd = build_cmd(main_py, args, model_cfg, backend, ollama_host, tp, max_seq)
+        cmd = build_cmd(main_py, args, model_cfg, backend, ollama_host, tp, max_seq, enable_thinking, local_model_path)
         cmd_str = " ".join(shlex.quote(part) for part in cmd)
 
         print("=" * 80)
-        print(f"[{idx}/{len(models)}] alias={alias} backend={backend} tp={tp} max_seq={max_seq}")
+        print(f"[{idx}/{len(models)}] alias={alias} backend={backend} tp={tp} max_seq={max_seq} thinking={enable_thinking}")
         print(f"CMD: {cmd_str}")
 
         if args.skip_existing and metrics_summary_path.exists():
@@ -282,14 +300,42 @@ def main():
             continue
 
         if args.dry_run:
-            leaderboard_rows.append(failure_row(args, model_cfg, backend, ollama_host, tp, max_seq, status="dry_run", error="", metrics_summary_path=metrics_summary_path))
+            leaderboard_rows.append(
+                failure_row(
+                    args,
+                    model_cfg,
+                    backend,
+                    ollama_host,
+                    tp,
+                    max_seq,
+                    enable_thinking,
+                    local_model_path,
+                    status="dry_run",
+                    error="",
+                    metrics_summary_path=metrics_summary_path,
+                )
+            )
             continue
 
         proc = subprocess.run(cmd, cwd=str(script_dir))
         if proc.returncode != 0:
             err_msg = f"main.py exited with code {proc.returncode}"
             print(f"ERROR: {err_msg}")
-            leaderboard_rows.append(failure_row(args, model_cfg, backend, ollama_host, tp, max_seq, status="failed", error=err_msg, metrics_summary_path=metrics_summary_path))
+            leaderboard_rows.append(
+                failure_row(
+                    args,
+                    model_cfg,
+                    backend,
+                    ollama_host,
+                    tp,
+                    max_seq,
+                    enable_thinking,
+                    local_model_path,
+                    status="failed",
+                    error=err_msg,
+                    metrics_summary_path=metrics_summary_path,
+                )
+            )
             if args.fail_fast:
                 break
             continue
@@ -297,7 +343,21 @@ def main():
         if not metrics_summary_path.exists():
             err_msg = f"Missing metrics summary: {metrics_summary_path}"
             print(f"ERROR: {err_msg}")
-            leaderboard_rows.append(failure_row(args, model_cfg, backend, ollama_host, tp, max_seq, status="missing_summary", error=err_msg, metrics_summary_path=metrics_summary_path))
+            leaderboard_rows.append(
+                failure_row(
+                    args,
+                    model_cfg,
+                    backend,
+                    ollama_host,
+                    tp,
+                    max_seq,
+                    enable_thinking,
+                    local_model_path,
+                    status="missing_summary",
+                    error=err_msg,
+                    metrics_summary_path=metrics_summary_path,
+                )
+            )
             if args.fail_fast:
                 break
             continue
@@ -305,6 +365,11 @@ def main():
         with open(metrics_summary_path, "r") as f:
             summary = json.load(f)
         leaderboard_rows.append(summary_to_row(summary, status="ok", error="", metrics_summary_path=metrics_summary_path))
+
+    if args.dry_run:
+        print("=" * 80)
+        print("Dry run completed. No leaderboard file was written.")
+        return
 
     leaderboard_path = output_root / "leaderboard.csv"
     write_leaderboard(leaderboard_rows, leaderboard_path)
