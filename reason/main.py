@@ -163,6 +163,7 @@ def main():
     parser.add_argument("--max_seq_len_to_capture", type=int, default=8192 * 2, help="Max sequence length to capture")
     parser.add_argument("--max_tokens", type=int, default=4000, help="Max tokens")
     parser.add_argument("--enable_thinking", action="store_true", help="Enable Qwen3 thinking mode when supported")
+    parser.add_argument("--vllm_enforce_eager", action="store_true", help="Force vLLM eager mode to bypass torch.compile startup issues")
     parser.add_argument("--seed", type=int, default=0, help="Seed")
     parser.add_argument("--temperature", type=float, default=0, help="Temperature")
     parser.add_argument("--frequency_penalty", type=float, default=0.16, help="Frequency penalty")
@@ -183,6 +184,7 @@ def main():
     max_seq_len_to_capture = args.max_seq_len_to_capture
     max_tokens = args.max_tokens
     enable_thinking = args.enable_thinking
+    vllm_enforce_eager = args.vllm_enforce_eager
     seed = args.seed
     temperature = args.temperature
     frequency_penalty = args.frequency_penalty
@@ -219,6 +221,7 @@ def main():
         ollama_host=ollama_host,
         enable_thinking=enable_thinking,
         local_model_path=local_model_path,
+        vllm_enforce_eager=vllm_enforce_eager,
     )
     data = get_data(dataset_name, pred_file_path, score_dict_path, split, prompt_mode)
     sys_prompt, cot_prompt = get_defined_prompts(prompt_mode, model_name, llm_mode)
@@ -270,6 +273,10 @@ def main():
         "subset_metrics": subset_metrics,
         "all_metrics": all_metrics,
     }
+    summary_payload.update({
+        k: v for k, v in llm_runtime_info.items()
+        if k not in summary_payload
+    })
     summary_path = raw_pred_folder_path / "metrics_summary.json"
     with open(summary_path, "w") as f:
         json.dump(summary_payload, f, indent=2)

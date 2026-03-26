@@ -1,8 +1,10 @@
 import inspect
+import os
 import time
 from functools import partial
 from pathlib import Path
 import re
+import sys
 
 import openai
 from openai import OpenAI
@@ -127,7 +129,28 @@ def _supports_signature_kwarg(callable_obj, arg_name: str) -> bool:
         return False
 
 
-def get_vllm_init_kwargs(model_ref: str, tensor_parallel_size: int, max_seq_len_to_capture: int):
+def get_vllm_runtime_env():
+    runtime_info = {
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "vllm_use_standalone_compile": os.environ.get("VLLM_USE_STANDALONE_COMPILE"),
+        "auto_disabled_vllm_standalone_compile": False,
+    }
+
+    if sys.version_info[:2] <= (3, 10) and runtime_info["vllm_use_standalone_compile"] is None:
+        # vLLM's standalone compile path has a known patching issue on Python 3.10.
+        os.environ["VLLM_USE_STANDALONE_COMPILE"] = "0"
+        runtime_info["vllm_use_standalone_compile"] = "0"
+        runtime_info["auto_disabled_vllm_standalone_compile"] = True
+
+    return runtime_info
+
+
+def get_vllm_init_kwargs(
+    model_ref: str,
+    tensor_parallel_size: int,
+    max_seq_len_to_capture: int,
+    vllm_enforce_eager: bool = False,
+):
     kwargs = {
         "model": model_ref,
         "tensor_parallel_size": tensor_parallel_size,
@@ -136,11 +159,17 @@ def get_vllm_init_kwargs(model_ref: str, tensor_parallel_size: int, max_seq_len_
     runtime_info = {
         "requested_max_seq_len_to_capture": max_seq_len_to_capture,
         "applied_max_seq_len_to_capture": False,
+        "requested_vllm_enforce_eager": bool(vllm_enforce_eager),
+        "applied_vllm_enforce_eager": False,
     }
 
     if _supports_signature_kwarg(getattr(VllmEngineArgs, "__init__", None), "max_seq_len_to_capture"):
         kwargs["max_seq_len_to_capture"] = max_seq_len_to_capture
         runtime_info["applied_max_seq_len_to_capture"] = True
+
+    if vllm_enforce_eager and _supports_signature_kwarg(getattr(VllmEngineArgs, "__init__", None), "enforce_eager"):
+        kwargs["enforce_eager"] = True
+        runtime_info["applied_vllm_enforce_eager"] = True
 
     return kwargs, runtime_info
 
@@ -157,6 +186,7 @@ def llm_init(
     ollama_host="http://127.0.0.1:11434",
     enable_thinking=False,
     local_model_path=None,
+    vllm_enforce_eager=False,
 ):
     resolved_backend = normalize_llm_backend(llm_backend, model_name)
     resolved_model_ref, resolved_model_source = resolve_model_ref(model_name, local_model_path)
@@ -172,16 +202,34 @@ def llm_init(
                 "vLLM is not available in the current Python environment, but llm_backend=local_vllm was requested. "
                 "Install vllm or switch to llm_backend=ollama."
             ) from _VLLM_IMPORT_ERROR
+        vllm_env_runtime_info = get_vllm_runtime_env()
+        runtime_info.update(vllm_env_runtime_info)
+        if runtime_info["auto_disabled_vllm_standalone_compile"]:
+            print(
+                "Python 3.10 detected; setting VLLM_USE_STANDALONE_COMPILE=0 "
+                "to avoid a known vLLM standalone compile startup failure."
+            )
         llm_init_kwargs, llm_init_runtime_info = get_vllm_init_kwargs(
             resolved_model_ref,
             tensor_parallel_size,
             max_seq_len_to_capture,
+            vllm_enforce_eager=vllm_enforce_eager,
         )
         runtime_info.update(llm_init_runtime_info)
         if not runtime_info["applied_max_seq_len_to_capture"]:
             print(
                 "Current vLLM build does not accept max_seq_len_to_capture; "
                 "continuing without this optimization setting."
+            )
+        if vllm_enforce_eager and not runtime_info["applied_vllm_enforce_eager"]:
+            print(
+                "Current vLLM build does not accept enforce_eager; "
+                "continuing without eager-mode fallback."
+            )
+        elif runtime_info["applied_vllm_enforce_eager"]:
+            print(
+                "Running vLLM with enforce_eager=True; "
+                "this disables torch.compile/CUDA-graph optimizations for stability."
             )
         client = LLM(**llm_init_kwargs)
         sampling_params = SamplingParams(

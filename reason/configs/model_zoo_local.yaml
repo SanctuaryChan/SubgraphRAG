@@ -3,6 +3,7 @@ defaults:
   tensor_parallel_size: 1
   max_seq_len_to_capture: 16384
   enable_thinking: false
+  vllm_enforce_eager: false
 
 models:
   - alias: qwen3_0_6b

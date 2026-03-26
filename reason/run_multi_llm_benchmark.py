@@ -59,16 +59,28 @@ def get_model_runtime_config(model_cfg: dict, defaults: dict, args):
     tp = model_cfg.get("tensor_parallel_size", defaults.get("tensor_parallel_size", 1))
     max_seq = model_cfg.get("max_seq_len_to_capture", defaults.get("max_seq_len_to_capture", 16384))
     enable_thinking = model_cfg.get("enable_thinking", defaults.get("enable_thinking", False))
+    vllm_enforce_eager = model_cfg.get("vllm_enforce_eager", defaults.get("vllm_enforce_eager", False))
     local_model_path = model_cfg.get("local_model_path", defaults.get("local_model_path"))
 
     if args.default_tensor_parallel_size is not None:
         tp = args.default_tensor_parallel_size
     if args.default_max_seq_len_to_capture is not None:
         max_seq = args.default_max_seq_len_to_capture
-    return backend, ollama_host, int(tp), int(max_seq), bool(enable_thinking), local_model_path
+    return backend, ollama_host, int(tp), int(max_seq), bool(enable_thinking), bool(vllm_enforce_eager), local_model_path
 
 
-def build_cmd(main_py: Path, args, model_cfg: dict, backend: str, ollama_host: str, tp: int, max_seq: int, enable_thinking: bool, local_model_path: str):
+def build_cmd(
+    main_py: Path,
+    args,
+    model_cfg: dict,
+    backend: str,
+    ollama_host: str,
+    tp: int,
+    max_seq: int,
+    enable_thinking: bool,
+    vllm_enforce_eager: bool,
+    local_model_path: str,
+):
     cmd = [
         args.python_bin,
         str(main_py),
@@ -105,6 +117,8 @@ def build_cmd(main_py: Path, args, model_cfg: dict, backend: str, ollama_host: s
         cmd.extend(["--local_model_path", local_model_path])
     if enable_thinking:
         cmd.append("--enable_thinking")
+    if vllm_enforce_eager:
+        cmd.append("--vllm_enforce_eager")
     if backend == "ollama":
         cmd.extend(["--ollama_host", ollama_host])
     if args.score_dict_path is not None:
@@ -138,6 +152,10 @@ def summary_to_row(summary, status, error, metrics_summary_path):
         "prompt_mode": summary.get("prompt_mode"),
         "llm_mode": summary.get("llm_mode"),
         "enable_thinking": summary.get("enable_thinking"),
+        "requested_vllm_enforce_eager": summary.get("requested_vllm_enforce_eager"),
+        "applied_vllm_enforce_eager": summary.get("applied_vllm_enforce_eager"),
+        "vllm_use_standalone_compile": summary.get("vllm_use_standalone_compile"),
+        "auto_disabled_vllm_standalone_compile": summary.get("auto_disabled_vllm_standalone_compile"),
         "split": summary.get("split"),
         "max_tokens": summary.get("max_tokens"),
         "temperature": summary.get("temperature"),
@@ -159,7 +177,20 @@ def summary_to_row(summary, status, error, metrics_summary_path):
     }
 
 
-def failure_row(args, model_cfg, backend: str, ollama_host: str, tp: int, max_seq: int, enable_thinking: bool, local_model_path: str, status, error, metrics_summary_path):
+def failure_row(
+    args,
+    model_cfg,
+    backend: str,
+    ollama_host: str,
+    tp: int,
+    max_seq: int,
+    enable_thinking: bool,
+    vllm_enforce_eager: bool,
+    local_model_path: str,
+    status,
+    error,
+    metrics_summary_path,
+):
     return {
         "dataset_name": args.dataset_name,
         "model_alias": model_cfg["alias"],
@@ -174,6 +205,10 @@ def failure_row(args, model_cfg, backend: str, ollama_host: str, tp: int, max_se
         "prompt_mode": args.prompt_mode,
         "llm_mode": args.llm_mode,
         "enable_thinking": enable_thinking,
+        "requested_vllm_enforce_eager": vllm_enforce_eager,
+        "applied_vllm_enforce_eager": None,
+        "vllm_use_standalone_compile": None,
+        "auto_disabled_vllm_standalone_compile": None,
         "split": args.split,
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
@@ -211,6 +246,10 @@ def write_leaderboard(rows, out_csv_path: Path):
         "prompt_mode",
         "llm_mode",
         "enable_thinking",
+        "requested_vllm_enforce_eager",
+        "applied_vllm_enforce_eager",
+        "vllm_use_standalone_compile",
+        "auto_disabled_vllm_standalone_compile",
         "split",
         "max_tokens",
         "temperature",
@@ -283,13 +322,27 @@ def main():
     for idx, model_cfg in enumerate(models, start=1):
         alias = model_cfg["alias"]
         alias_tag = sanitize_name(alias)
-        backend, ollama_host, tp, max_seq, enable_thinking, local_model_path = get_model_runtime_config(model_cfg, defaults, args)
+        backend, ollama_host, tp, max_seq, enable_thinking, vllm_enforce_eager, local_model_path = get_model_runtime_config(model_cfg, defaults, args)
         metrics_summary_path = output_root / alias_tag / "metrics_summary.json"
-        cmd = build_cmd(main_py, args, model_cfg, backend, ollama_host, tp, max_seq, enable_thinking, local_model_path)
+        cmd = build_cmd(
+            main_py,
+            args,
+            model_cfg,
+            backend,
+            ollama_host,
+            tp,
+            max_seq,
+            enable_thinking,
+            vllm_enforce_eager,
+            local_model_path,
+        )
         cmd_str = " ".join(shlex.quote(part) for part in cmd)
 
         print("=" * 80)
-        print(f"[{idx}/{len(models)}] alias={alias} backend={backend} tp={tp} max_seq={max_seq} thinking={enable_thinking}")
+        print(
+            f"[{idx}/{len(models)}] alias={alias} backend={backend} tp={tp} "
+            f"max_seq={max_seq} thinking={enable_thinking} eager={vllm_enforce_eager}"
+        )
         print(f"CMD: {cmd_str}")
 
         if args.skip_existing and metrics_summary_path.exists():
@@ -309,6 +362,7 @@ def main():
                     tp,
                     max_seq,
                     enable_thinking,
+                    vllm_enforce_eager,
                     local_model_path,
                     status="dry_run",
                     error="",
@@ -330,6 +384,7 @@ def main():
                     tp,
                     max_seq,
                     enable_thinking,
+                    vllm_enforce_eager,
                     local_model_path,
                     status="failed",
                     error=err_msg,
@@ -352,6 +407,7 @@ def main():
                     tp,
                     max_seq,
                     enable_thinking,
+                    vllm_enforce_eager,
                     local_model_path,
                     status="missing_summary",
                     error=err_msg,
