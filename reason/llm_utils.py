@@ -1,3 +1,4 @@
+import inspect
 import time
 from functools import partial
 from pathlib import Path
@@ -13,6 +14,11 @@ except Exception as e:
     LLM = None
     SamplingParams = None
     _VLLM_IMPORT_ERROR = e
+
+try:
+    from vllm.engine.arg_utils import EngineArgs as VllmEngineArgs
+except Exception:
+    VllmEngineArgs = None
 
 try:
     from ollama import Client as OllamaClient
@@ -112,6 +118,33 @@ def normalize_llm_backend(llm_backend: str, model_name: str) -> str:
     return backend
 
 
+def _supports_signature_kwarg(callable_obj, arg_name: str) -> bool:
+    if callable_obj is None:
+        return False
+    try:
+        return arg_name in inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def get_vllm_init_kwargs(model_ref: str, tensor_parallel_size: int, max_seq_len_to_capture: int):
+    kwargs = {
+        "model": model_ref,
+        "tensor_parallel_size": tensor_parallel_size,
+        "trust_remote_code": True,
+    }
+    runtime_info = {
+        "requested_max_seq_len_to_capture": max_seq_len_to_capture,
+        "applied_max_seq_len_to_capture": False,
+    }
+
+    if _supports_signature_kwarg(getattr(VllmEngineArgs, "__init__", None), "max_seq_len_to_capture"):
+        kwargs["max_seq_len_to_capture"] = max_seq_len_to_capture
+        runtime_info["applied_max_seq_len_to_capture"] = True
+
+    return kwargs, runtime_info
+
+
 def llm_init(
     model_name,
     tensor_parallel_size=1,
@@ -139,12 +172,18 @@ def llm_init(
                 "vLLM is not available in the current Python environment, but llm_backend=local_vllm was requested. "
                 "Install vllm or switch to llm_backend=ollama."
             ) from _VLLM_IMPORT_ERROR
-        client = LLM(
-            model=resolved_model_ref,
-            tensor_parallel_size=tensor_parallel_size,
-            max_seq_len_to_capture=max_seq_len_to_capture,
-            trust_remote_code=True,
+        llm_init_kwargs, llm_init_runtime_info = get_vllm_init_kwargs(
+            resolved_model_ref,
+            tensor_parallel_size,
+            max_seq_len_to_capture,
         )
+        runtime_info.update(llm_init_runtime_info)
+        if not runtime_info["applied_max_seq_len_to_capture"]:
+            print(
+                "Current vLLM build does not accept max_seq_len_to_capture; "
+                "continuing without this optimization setting."
+            )
+        client = LLM(**llm_init_kwargs)
         sampling_params = SamplingParams(
             temperature=temperature,
             max_tokens=max_tokens,
