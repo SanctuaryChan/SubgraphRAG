@@ -1,0 +1,52 @@
+{
+  "dataset": "cwq",
+  "path": "cwq_Feb13-14:03:57/retrieval_result.pth",
+  "target_mode": "pseudo",
+  "k_eval": 20,
+  "candidate_k": 500,
+  "delta_list": [
+    3,
+    4,
+    5,
+    6
+  ],
+  "pnear_list": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "btype_list": [
+    12,
+    14,
+    16,
+    18,
+    20
+  ],
+  "alpha": 0.5,
+  "beta": 0.2,
+  "pseudo_pool_k": 100,
+  "pseudo_top_m": 3,
+  "rtype_keywords": [
+    "type",
+    "types",
+    "notable",
+    "instance",
+    "category",
+    "profession",
+    "gender",
+    "nationality",
+    "ethnicity",
+    "language"
+  ],
+  "top_ratio": 0.15,
+  "num_samples_total": 3531,
+  "num_surrogate_valid_base": 3531,
+  "num_combinations": 160,
+  "elapsed_seconds": 111.178,
+  "evaluation_mode": "all-sample-zero-fill"
+}

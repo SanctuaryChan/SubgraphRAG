@@ -1,0 +1,20 @@
+{
+  "dataset": "webqsp",
+  "target_mode": "pseudo",
+  "k_eval": 20,
+  "top_ratio": 0.15,
+  "recommended_ranges": {
+    "delta": [
+      3,
+      6
+    ],
+    "p_near": [
+      9,
+      14
+    ],
+    "b_type": [
+      12,
+      20
+    ]
+  }
+}

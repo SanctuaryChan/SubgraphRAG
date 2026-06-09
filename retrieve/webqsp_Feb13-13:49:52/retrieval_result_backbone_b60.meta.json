@@ -1,0 +1,11 @@
+{
+  "num_samples": 1638,
+  "avg_backbone_edges": 22.171550671550673,
+  "avg_fill_edges": 77.60805860805861,
+  "avg_candidates": 19.968864468864467,
+  "avg_paths": 21.53174603174603,
+  "samples_backbone_empty": 1,
+  "samples_path_not_found": 1,
+  "samples_fill_from_top200": 0,
+  "samples_fill_from_global_tail": 0
+}

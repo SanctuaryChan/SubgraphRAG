@@ -1,0 +1,6 @@
+  K  ans_recall  shortest_path_triple_recall  gpt_triple_recall
+ 50       0.901                        0.827              0.804
+100       0.946                        0.881              0.860
+200       0.972                        0.928              0.909
+400       0.985                        0.961              0.949
+500       0.987                        0.969              0.961

@@ -1,0 +1,52 @@
+{
+  "dataset": "webqsp",
+  "path": "webqsp_Feb13-13:49:52/retrieval_result.pth",
+  "k_eval": 20,
+  "candidate_k": 500,
+  "delta_list": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "pnear_list": [
+    50,
+    100,
+    150,
+    200,
+    250,
+    300,
+    350,
+    400,
+    450,
+    500
+  ],
+  "btype_list": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "alpha": 0.5,
+  "beta": 0.2,
+  "rtype_keywords": [
+    "type",
+    "types",
+    "notable",
+    "instance",
+    "category",
+    "profession",
+    "gender",
+    "nationality",
+    "ethnicity",
+    "language"
+  ],
+  "top_ratio": 0.15,
+  "num_samples_total": 1639,
+  "num_surrogate_valid_base": 1546,
+  "num_combinations": 240,
+  "elapsed_seconds": 62.176,
+  "evaluation_mode": "all-sample-zero-fill"
+}
